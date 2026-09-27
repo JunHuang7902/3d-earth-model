@@ -26,7 +26,7 @@
 
    Notas de corrección de bugs:
    - Las imágenes/videos viven en una carpeta "assets" HERMANA de esta carpeta
-     ("3D Earth"), no dentro de ella. Por eso todas las rutas usan "../assets/…".
+     ("3D Earth"), no dentro de ella. Por eso todas las rutas usan "assets/…".
    - Los nombres de archivo con espacios se pasan por encodeURI() para que los
      espacios no rompan la ruta.
    - Toda la inicialización de Three.js queda protegida con try/catch y con
@@ -700,7 +700,7 @@
   // --------------------------------------------------------------------
   // 13. Escena 3 — Video "Correr para vivir (primera parte)" + opción múltiple
   // --------------------------------------------------------------------
-  var VIDEO_SRC = encodeURI('../assets/Correr para vivir (primera parte).mp4');
+  var VIDEO_SRC = encodeURI('assets/Correr para vivir (primera parte).mp4');
   var CORRECT_EXPLANATION_1 =
     'A la edad de seis años, mientras asistía a la iglesia de su aldea en Sudán, unos soldados rebeldes ' +
     'irrumpieron en la misa y lo secuestraron en la caja de un camión militar junto con otros niños para ' +
@@ -730,7 +730,7 @@
   // --------------------------------------------------------------------
   // 14. Escena 4 — Video "correrparavivir2.mp4" + Verdadero/Falso
   // --------------------------------------------------------------------
-  var QUIZ2_VIDEO_SRC = encodeURI('../assets/correrparavivir2.mp4');
+  var QUIZ2_VIDEO_SRC = encodeURI('assets/correrparavivir2.mp4');
   var MOTHER_EXPLANATION =
     'A principios del verano de 2003, mientras Lopez estaba en el jardín de su casa en Nueva York, recibió la ' +
     'llamada de su amigo Simon desde el campo de refugiados de Kakuma. Simon le contó que su madre biológica ' +
@@ -762,7 +762,7 @@
   // --------------------------------------------------------------------
   // 15. Escena 5 — Video "video_serpersona.mp4" + reflexión final
   // --------------------------------------------------------------------
-  var REFLEXION_VIDEO_SRC = encodeURI('../assets/video_serpersona.mp4');
+  var REFLEXION_VIDEO_SRC = encodeURI('assets/video_serpersona.mp4');
 
   function startReflexionScene() {
     SceneManager.activate('scene-reflexion');
@@ -786,7 +786,7 @@
   // --------------------------------------------------------------------
   var cloudsVideo = document.getElementById('clouds-video');
   var cloudsAudio = document.getElementById('clouds-audio');
-  cloudsVideo.src = encodeURI('../assets/Avión_volando_sobre_nubes.mp4');
+  cloudsVideo.src = encodeURI('assets/Avión_volando_sobre_nubes.mp4');
   // El video se reproduce sin sonido: el único audio de esta escena es el
   // del capitán (capitan2.mp3), reproducido por separado.
   cloudsVideo.muted = true;
@@ -835,7 +835,7 @@
   // 15c. Escena 7 — Video "pelicula.mp4" + pregunta (sin opciones,
   //      avanza al hacer click en "Siguiente").
   // --------------------------------------------------------------------
-  var PELICULA_VIDEO_SRC = encodeURI('../assets/pelicula.mp4');
+  var PELICULA_VIDEO_SRC = encodeURI('assets/pelicula.mp4');
 
   function startPeliculaScene() {
     SceneManager.activate('scene-pelicula');
@@ -865,7 +865,7 @@
   //      avanza sola a la Escena 9 (e-book).
   // --------------------------------------------------------------------
   var leyendoVideo = document.getElementById('leyendo-video');
-  leyendoVideo.src = encodeURI('../assets/leyendo.mp4');
+  leyendoVideo.src = encodeURI('assets/leyendo.mp4');
 
   function startLeyendoScene() {
     SceneManager.activate('scene-leyendo');
@@ -962,7 +962,7 @@
   //      superpuestos al mostrarse juntos.
   // --------------------------------------------------------------------
   var libertadVideo = document.getElementById('libertad-video');
-  libertadVideo.src = encodeURI('../assets/Libertad.mp4');
+  libertadVideo.src = encodeURI('assets/Libertad.mp4');
 
   function startLibertadVideoScene() {
     SceneManager.activate('scene-libertad-video');
@@ -1144,8 +1144,8 @@
   // --------------------------------------------------------------------
   var takeoffVideo1 = document.getElementById('takeoff-video-1');
   var takeoffVideo2 = document.getElementById('takeoff-video-2');
-  takeoffVideo1.src = encodeURI('../assets/apuntodespegar.mp4');
-  takeoffVideo2.src = encodeURI('../assets/despegando.mp4');
+  takeoffVideo1.src = encodeURI('assets/apuntodespegar.mp4');
+  takeoffVideo2.src = encodeURI('assets/despegando.mp4');
 
   function playVideo(videoEl) {
     var p = videoEl.play();

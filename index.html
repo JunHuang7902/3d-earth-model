@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Correr para Vivir | Juego Educativo</title>
-  <link rel="icon" href="../assets/foto_avion.jpg" />
+  <link rel="icon" href="assets/foto_avion.jpg" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -13,9 +13,9 @@
        ESCENA 0 — Sala de espera + audio del capitán (0s → 55s)
   ============================================================ -->
   <div id="scene-start" class="scene active">
-    <img class="scene-bg" src="../assets/salaespera.jpg" alt="Sala de espera" />
+    <img class="scene-bg" src="assets/salaespera.jpg" alt="Sala de espera" />
     <div class="scene-overlay"></div>
-    <audio id="captain-audio" src="../assets/Audio_capitan.mp3" preload="auto"></audio>
+    <audio id="captain-audio" src="assets/Audio_capitan.mp3" preload="auto"></audio>
     <button id="start-btn">Toca para comenzar</button>
   </div>
 
@@ -39,7 +39,7 @@
 
     <div id="hud">
       <div id="hud-header">
-        <img id="plane-thumb" src="../assets/foto_avion.jpg" alt="Avión" />
+        <img id="plane-thumb" src="assets/foto_avion.jpg" alt="Avión" />
         <div id="hud-header-text">
           <div id="flight-code">AV045</div>
           <div id="flight-route"><span id="route-origin-code">BOG</span> <span class="arrow">&#8594;</span> <span id="route-dest-code">SSD</span></div>
@@ -103,10 +103,10 @@
   ============================================================ -->
   <div id="scene-arrival" class="scene">
     <button class="back-btn" data-back>&#8592; Volver</button>
-    <img class="scene-bg" src="../assets/aeropuerto_sudan.jpg" alt="Aeropuerto de Sudán del Sur" />
+    <img class="scene-bg" src="assets/aeropuerto_sudan.jpg" alt="Aeropuerto de Sudán del Sur" />
     <div class="scene-overlay"></div>
 
-    <img id="lopez" class="character offscreen-left" src="../assets/lopezlomong.png" alt="López Lomong" />
+    <img id="lopez" class="character offscreen-left" src="assets/lopezlomong.png" alt="López Lomong" />
 
     <div id="dialogue-box" class="hidden">
       <div id="dialogue-name">López Lomong</div>
@@ -237,7 +237,7 @@
   ============================================================ -->
   <div id="scene-clouds" class="scene">
     <video id="clouds-video" class="fullscreen-video" playsinline preload="auto"></video>
-    <audio id="clouds-audio" src="../assets/capitan2.mp3" preload="auto"></audio>
+    <audio id="clouds-audio" src="assets/capitan2.mp3" preload="auto"></audio>
   </div>
 
   <!-- ============================================================

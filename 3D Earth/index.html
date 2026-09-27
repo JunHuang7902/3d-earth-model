@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Correr para Vivir | Juego Educativo</title>
+  <link rel="icon" href="../assets/foto_avion.jpg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ============================================================
+       ESCENA 0 — Sala de espera + audio del capitán (0s → 55s)
+  ============================================================ -->
+  <div id="scene-start" class="scene active">
+    <img class="scene-bg" src="../assets/salaespera.jpg" alt="Sala de espera" />
+    <div class="scene-overlay"></div>
+    <audio id="captain-audio" src="../assets/Audio_capitan.mp3" preload="auto"></audio>
+    <button id="start-btn">Toca para comenzar</button>
+  </div>
+
+  <!-- ============================================================
+       ESCENA DESPEGUE — apuntodespegar.mp4 → despegando.mp4 (continuo)
+  ============================================================ -->
+  <div id="scene-takeoff" class="scene">
+    <video id="takeoff-video-1" class="fullscreen-video" playsinline preload="auto"></video>
+    <video id="takeoff-video-2" class="fullscreen-video hidden-video" playsinline preload="auto"></video>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 1 — Vuelo Bogotá -> Sudán del Sur (Three.js)
+  ============================================================ -->
+  <div id="scene-flight" class="scene">
+
+    <div id="loading-screen">
+      <div class="loader-spinner"></div>
+      <div class="loader-text">Cargando escena 3D…</div>
+    </div>
+
+    <div id="hud">
+      <div id="hud-header">
+        <img id="plane-thumb" src="../assets/foto_avion.jpg" alt="Avión" />
+        <div id="hud-header-text">
+          <div id="flight-code">AV045</div>
+          <div id="flight-route"><span id="route-origin-code">BOG</span> <span class="arrow">&#8594;</span> <span id="route-dest-code">SSD</span></div>
+        </div>
+      </div>
+
+      <div id="progress-wrap">
+        <div id="progress-bar"><div id="progress-fill"></div></div>
+        <div id="progress-label"><span id="progress-pct">0%</span> completado</div>
+      </div>
+
+      <div id="stats-grid">
+        <div class="stat-tile">
+          <div class="stat-label">Velocidad</div>
+          <div class="stat-value"><span id="stat-speed">0</span><span class="stat-unit">km/h</span></div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Altitud</div>
+          <div class="stat-value"><span id="stat-altitude">0</span><span class="stat-unit">m</span></div>
+          <div class="stat-subvalue"><span id="stat-altitude-ft">0</span> ft</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Temp. exterior</div>
+          <div class="stat-value"><span id="stat-temp">--</span><span class="stat-unit">&deg;C</span></div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label">Tiempo restante</div>
+          <div class="stat-value" id="stat-eta">--:--</div>
+        </div>
+      </div>
+
+      <div id="clocks">
+        <div class="clock-block">
+          <div class="clock-city" id="clock-city-origin">Bogotá (origen)</div>
+          <div class="clock-time" id="clock-origin">--:--:--</div>
+        </div>
+        <div class="clock-block">
+          <div class="clock-city" id="clock-city-destination">Sudán del Sur (destino)</div>
+          <div class="clock-time" id="clock-destination">--:--:--</div>
+        </div>
+      </div>
+
+      <div id="legend">
+        <span class="legend-item"><i class="dot dot-done"></i> Tramo recorrido</span>
+        <span class="legend-item"><i class="dot dot-pending"></i> Tramo restante</span>
+      </div>
+    </div>
+
+    <!-- Pin de llegada animado (se posiciona por JS sobre el destino) -->
+    <div id="arrival-pin">
+      <svg viewBox="0 0 24 32" width="46" height="60">
+        <path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 20 12 20s12-11 12-20c0-6.6-5.4-12-12-12z" fill="#ff5a5a"/>
+        <circle cx="12" cy="12" r="5" fill="#ffffff"/>
+      </svg>
+      <div id="arrival-pin-label">Sudán del Sur</div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 2 — Llegada: aeropuerto + guía López Lomong
+  ============================================================ -->
+  <div id="scene-arrival" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <img class="scene-bg" src="../assets/aeropuerto_sudan.jpg" alt="Aeropuerto de Sudán del Sur" />
+    <div class="scene-overlay"></div>
+
+    <img id="lopez" class="character offscreen-left" src="../assets/lopezlomong.png" alt="López Lomong" />
+
+    <div id="dialogue-box" class="hidden">
+      <div id="dialogue-name">López Lomong</div>
+      <p id="dialogue-text">Hola amigo, bienvenido a mi país natal Sudán del Sur, te contaré un poco sobre mi historia</p>
+      <button id="dialogue-continue">Continuar &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 3 — Video + pregunta interactiva
+  ============================================================ -->
+  <div id="scene-quiz" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="quiz-left">
+      <video id="quiz-video" controls playsinline></video>
+    </div>
+
+    <div class="quiz-right">
+      <div class="quiz-kicker">Correr para Vivir — Parte 1</div>
+      <h2 class="quiz-question">¿Qué suceso desencadena la historia de Lopepe (López Lomong) al comienzo del libro <em>Correr para vivir</em>?</h2>
+
+      <div class="quiz-options" id="quiz-options">
+        <button class="quiz-option" data-option="A" data-correct="false">
+          <span class="quiz-option-letter">A</span>
+          <span class="quiz-option-text">Fue seleccionado por un reclutador internacional para entrenar como atleta profesional en Kenia.</span>
+        </button>
+        <button class="quiz-option" data-option="B" data-correct="true">
+          <span class="quiz-option-letter">B</span>
+          <span class="quiz-option-text">Fue secuestrado a los seis años por soldados rebeldes durante una misa dominical en su aldea natal de Kimotong.</span>
+        </button>
+        <button class="quiz-option" data-option="C" data-correct="false">
+          <span class="quiz-option-letter">C</span>
+          <span class="quiz-option-text">Emigró voluntariamente junto a sus padres y hermanos hacia un campo de refugiados en busca de alimentos.</span>
+        </button>
+        <button class="quiz-option" data-option="D" data-correct="false">
+          <span class="quiz-option-letter">D</span>
+          <span class="quiz-option-text">Ganó un concurso escolar de redacción que le permitió viajar a Estados Unidos.</span>
+        </button>
+      </div>
+
+      <div id="quiz-feedback" class="quiz-feedback hidden">
+        <div id="quiz-feedback-title" class="quiz-feedback-title"></div>
+        <p id="quiz-feedback-text" class="quiz-feedback-text"></p>
+      </div>
+
+      <button id="quiz-next" class="quiz-next-btn btn-hidden">Siguiente &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 4 — Video "Correr para vivir 2" + Verdadero/Falso
+  ============================================================ -->
+  <div id="scene-quiz2" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="quiz-left">
+      <video id="quiz-video-2" controls playsinline></video>
+    </div>
+
+    <div class="quiz-right">
+      <div class="quiz-kicker">Correr para Vivir — Parte 2</div>
+      <h2 class="quiz-question">¿López Lomong se da cuenta de que su madre biológica seguía con vida?</h2>
+
+      <div class="quiz-options" id="quiz2-options">
+        <button class="quiz-option" data-option="V" data-correct="true">
+          <span class="quiz-option-letter">V</span>
+          <span class="quiz-option-text">Verdadero</span>
+        </button>
+        <button class="quiz-option" data-option="F" data-correct="false">
+          <span class="quiz-option-letter">F</span>
+          <span class="quiz-option-text">Falso</span>
+        </button>
+      </div>
+
+      <div id="quiz2-feedback" class="quiz-feedback hidden">
+        <div id="quiz2-feedback-title" class="quiz-feedback-title"></div>
+        <p id="quiz2-feedback-text" class="quiz-feedback-text"></p>
+      </div>
+
+      <button id="quiz2-next" class="quiz-next-btn btn-hidden">Siguiente &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 5 — Video "¿Ser buena persona?" + reflexión final
+  ============================================================ -->
+  <div id="scene-reflexion" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="quiz-left">
+      <video id="reflexion-video" controls playsinline></video>
+    </div>
+
+    <div class="quiz-right">
+      <div class="quiz-kicker">Para reflexionar</div>
+      <p class="reflexion-context">
+        En esta entrevista, Howard Gardner sostiene categóricamente que
+        <strong>«una mala persona no llega nunca a ser un buen profesional»</strong>.
+        Tras sus investigaciones en el Goodwork Project de la Universidad de Harvard,
+        concluye que los mejores profesionales son siempre aquellos que combinan tres
+        factores (ECE): son <strong>Excelentes</strong> en su desempeño, están
+        <strong>Comprometidos</strong> con su trabajo y actúan de forma
+        <strong>Ética</strong>.
+      </p>
+      <p class="reflexion-context">
+        Para Gardner, una persona sin principios éticos o guiada únicamente por el ego,
+        la avaricia o el beneficio personal puede llegar a tener pericia técnica o
+        acumular riqueza, pero nunca alcanzará la excelencia verdadera. Esto se debe a
+        que la excelencia exige trascender las necesidades propias para servir a un
+        propósito más amplio que beneficie a la comunidad. Sin embargo, el propio autor
+        advierte con preocupación que muchos estudiantes ven la ética como algo
+        secundario al inicio de sus carreras, creyendo que para triunfar primero
+        necesitan dar "codazos".
+      </p>
+      <p class="reflexion-question">
+        ¿Hasta qué punto consideras que la ética y el compromiso con los demás son
+        indispensables para alcanzar la verdadera excelencia en tu vida laboral, o
+        crees —como piensan muchos jóvenes según Gardner— que la ética es un "lujo"
+        que solo se puede uno permitir tras haber alcanzado el éxito?
+      </p>
+
+      <button id="reflexion-next" class="quiz-next-btn">Siguiente &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 6 — Transición: video en vuelo sobre nubes + audio del
+       capitán (capitan2.mp3, ~20s). El video se reproduce dos veces y
+       se avanza solo cuando el audio Y el video ya han terminado.
+  ============================================================ -->
+  <div id="scene-clouds" class="scene">
+    <video id="clouds-video" class="fullscreen-video" playsinline preload="auto"></video>
+    <audio id="clouds-audio" src="../assets/capitan2.mp3" preload="auto"></audio>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 7 — Video "pelicula.mp4" + pregunta de reflexión
+  ============================================================ -->
+  <div id="scene-pelicula" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="quiz-right">
+      <p class="reflexion-question">¿Te acuerdas de esta película en tu clase de Core 1? ¿Qué puedes rescatar de esta película que te haya servido a lo largo de todos estos años, ahora que te encuentras en Core 5?</p>
+
+      <button id="pelicula-next" class="quiz-next-btn">Siguiente &#8594;</button>
+    </div>
+    <div class="quiz-left">
+      <video id="pelicula-video" controls playsinline></video>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 8 — Video "leyendo.mp4" a pantalla completa (avanza solo
+       al terminar el video)
+  ============================================================ -->
+  <div id="scene-leyendo" class="scene">
+    <video id="leyendo-video" class="fullscreen-video" playsinline preload="auto"></video>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 9 — E-book: "Manifestaciones de la persona" / "Identidad"
+  ============================================================ -->
+  <div id="scene-ebook" class="scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="ebook-wrap">
+      <div class="ebook-page active" data-page="1">
+        <div class="ebook-page-number">Página 1</div>
+        <h1 class="ebook-title">Manifestaciones de la persona</h1>
+        <p class="ebook-text">La noción de persona humana constituye el núcleo de la antropología y el fundamento de la dignidad e inviolabilidad de cada individuo. Su característica definatoria es la intimidad, un mundo interior inmaterial y creador que contiene pensamientos e ideas inéditas. Esta dimensión íntima le otorga a la persona una identidad única, irremplazable e irrepetible, reconocida a través de un nombre propio.</p>
+        <p class="ebook-text">Esa interioridad no permanece estática, sino que se exterioriza necesariamente mediante el cuerpo y el lenguaje. El cuerpo —manifestado especialmente en el rostro, los gestos y la vestimenta protegida por el pudor— es la condición de posibilidad para mostrar la intimidad al mundo. Por su parte, la palabra permite comunicar los pensamientos y hacerlos públicos para entrar en relación con otros.</p>
+        <p class="ebook-text">Por último, la persona alcanza su plenitud en la intersubjetividad y el diálogo, ya que posee una naturaleza comunitaria y no puede existir en el aislamiento («no hay un yo si no hay un tú»). Esta apertura a los demás se despliega a través de la libertad —como dominio sobre los propios actos— y la capacidad de donación o amor, mediante la cual la persona entrega voluntariamente algo de su propia intimidad a sus semejantes.</p>
+        <button class="ebook-next-page" data-goto="2">Página siguiente &#8594;</button>
+      </div>
+      <div class="ebook-page" data-page="2">
+        <div class="ebook-page-number">Página 2</div>
+        <h1 class="ebook-title">Identidad</h1>
+        <p class="ebook-text">La identidad personal y la autenticidad no son propiedades estáticas otorgadas a priori, sino el resultado dinámico del despliegue de la libertad a lo largo de la biografía de cada individuo. En su sentido genuino, lo auténtico representa la correspondencia verdadera entre la conducta exterior y el fondo inalienable de la intimidad personal. Asimismo, esta identidad posee una dimensión dialógica, puesto que requiere del reconocimiento de los demás para constituirse plenamente y evitar distorsiones como el autoengaño, la alienación o la inautenticidad.</p>
+        <p class="ebook-text">Como desarrollo de esta tesis, la autenticidad exige un refrendo personal de la acción, lo que implica que las decisiones no broten de condicionamientos externos o modas miméticas, sino que sean asumidas voluntariamente desde el núcleo de valores de la persona. Frente al individualismo moderno que reduce la libertad a la simple elección espontánea o al consumo, la existencia auténtica se configura como una virtud e ideal moral (kalokagathía), caracterizada por la coherencia interior, la madurez y la intensidad vital.</p>
+        <p class="ebook-text">Finalmente, el texto plantea que el factor máximamente personalizador de la vida es la vocación, entendida como el descubrimiento de un proyecto biográfico global e irremplazable. Lejos de ser una invención puramente egoísta, la vocación se experimenta como una llamada o don recibido que responde a la pregunta de quién se es, otorgando un «para qué» fundamental y logrando la unidad de vida a través de la fidelidad entre el origen, el presente y el destino.</p>
+        <div class="ebook-nav">
+          <button class="ebook-prev-page" data-goto="1">&#8592; Página anterior</button>
+          <button id="ebook-next-scene" class="quiz-next-btn">Siguiente &#8594;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 10 — Evaluación 1: Autenticidad y Trayectoria (Lopez Lomong)
+  ============================================================ -->
+  <div id="scene-eval1" class="scene eval-scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="eval-card">
+      <div class="quiz-kicker">Evaluación 1 &middot; Autenticidad y Trayectoria</div>
+      <h2 class="quiz-question">En <em>Identidad</em>, Ricardo Yepes afirma que la auténtica identidad personal no surge de la mera espontaneidad o la búsqueda de éxito superficial, sino de la fidelidad a los propios orígenes y del descubrimiento de una vocación que da unidad y sentido al proyecto vital. ¿Cómo se refleja esta noción de la autenticidad en la trayectoria de Lopez Lomong cuando se convierte en atleta profesional en Estados Unidos?</h2>
+
+      <div class="quiz-options" id="eval1-options">
+        <button class="quiz-option" data-option="A" data-correct="false">
+          <span class="quiz-option-letter">A</span>
+          <span class="quiz-option-text">Lopez concibe el atletismo de manera puramente mercantil, buscando la fama y la riqueza personal para desvincularse por completo de su doloroso pasado en Sudán.</span>
+        </button>
+        <button class="quiz-option" data-option="B" data-correct="true">
+          <span class="quiz-option-letter">B</span>
+          <span class="quiz-option-text">Lopez asume el correr no solo como un deporte, sino como una vocación y plataforma para dar voz a los "niños perdidos", ayudar a su pueblo en Sudán del Sur y mantener la coherencia con sus raíces.</span>
+        </button>
+        <button class="quiz-option" data-option="C" data-correct="false">
+          <span class="quiz-option-letter">C</span>
+          <span class="quiz-option-text">Lopez decide abandonar la competición profesional porque considera que el éxito deportivo occidental entra en conflicto insalvable con su identidad africana.</span>
+        </button>
+        <button class="quiz-option" data-option="D" data-correct="false">
+          <span class="quiz-option-letter">D</span>
+          <span class="quiz-option-text">Lopez utiliza el deporte como un medio de evasión individualista, argumentando que la libertad consiste únicamente en elegir sin compromisos comunitarios ni morales.</span>
+        </button>
+      </div>
+
+      <div id="eval1-feedback" class="quiz-feedback hidden">
+        <div id="eval1-feedback-title" class="quiz-feedback-title"></div>
+        <p id="eval1-feedback-text" class="quiz-feedback-text"></p>
+      </div>
+
+      <button id="eval1-next" class="quiz-next-btn btn-hidden">Siguiente &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 11 — Evaluación 2: Intersubjetividad y Donación (Correr para Vivir)
+  ============================================================ -->
+  <div id="scene-eval2" class="scene eval-scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="eval-card">
+      <div class="quiz-kicker">Evaluación 2 &middot; Intersubjetividad y Donación</div>
+      <h2 class="quiz-question">El texto <em>Manifestaciones de la Persona</em> sostiene que el ser humano es un ser esencialmente comunitario que alcanza su plenitud a través de la intersubjetividad, el diálogo y la donación de sí mismo (el amor como entrega de la propia intimidad al otro). ¿Qué suceso crucial de la infancia de Lopez en <em>Correr para vivir</em> ejemplifica de manera más clara esta dimensión de donación y protección interpersonal?</h2>
+
+      <div class="quiz-options" id="eval2-options">
+        <button class="quiz-option" data-option="A" data-correct="false">
+          <span class="quiz-option-letter">A</span>
+          <span class="quiz-option-text">El tiempo en que permaneció en soledad dentro del barracón militar reflexionando sobre su propio destino.</span>
+        </button>
+        <button class="quiz-option" data-option="B" data-correct="false">
+          <span class="quiz-option-letter">B</span>
+          <span class="quiz-option-text">El momento en que observó por primera vez una transmisión de televisión en una granja cercana al campo de Kakuma.</span>
+        </button>
+        <button class="quiz-option" data-option="C" data-correct="true">
+          <span class="quiz-option-letter">C</span>
+          <span class="quiz-option-text">La acción desinteresada de los "tres ángeles" (jóvenes mayores) que arriesgaron sus vidas, compartieron sus escasos recursos y lo cargaron a sus espaldas para salvarlo durante la huida del campamento rebelde.</span>
+        </button>
+        <button class="quiz-option" data-option="D" data-correct="false">
+          <span class="quiz-option-letter">D</span>
+          <span class="quiz-option-text">El trayecto individual en avión que realizó desde Nairobi hasta Nueva York al ser adoptado por la familia Rogers.</span>
+        </button>
+      </div>
+
+      <div id="eval2-feedback" class="quiz-feedback hidden">
+        <div id="eval2-feedback-title" class="quiz-feedback-title"></div>
+        <p id="eval2-feedback-text" class="quiz-feedback-text"></p>
+      </div>
+
+      <button id="eval2-next" class="quiz-next-btn btn-hidden">Siguiente &#8594;</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 12 — Video "Libertad.mp4" a pantalla completa (avanza sola
+       al terminar el video)
+  ============================================================ -->
+  <div id="scene-libertad-video" class="scene">
+    <video id="libertad-video" class="fullscreen-video" playsinline preload="auto"></video>
+  </div>
+
+  <!-- ============================================================
+       ESCENA 13 — Contexto y pregunta de reflexión sobre la Libertad
+  ============================================================ -->
+  <div id="scene-libertad" class="scene eval-scene">
+    <button class="back-btn" data-back>&#8592; Volver</button>
+    <div class="eval-card">
+      <div class="quiz-kicker">Para reflexionar</div>
+      <p class="reflexion-context">
+        Libertad constitutiva o interior: Es el nivel más profundo de la persona; un centro de
+        intimidad y dignidad inviolable que nadie puede arrebatar, ni siquiera en situaciones de
+        cautiverio o coerción externa. Esta dimensión parte de la «síntesis pasiva» —es decir, las
+        circunstancias que no elegimos, como nuestro cuerpo, familia o momento histórico—, las cuales
+        no son un límite que nos anula, sino el punto de partida real desde el cual actuamos.
+      </p>
+
+      <ul class="reflexion-list">
+        <li><strong>Libertad de elección o arbitrio:</strong> La capacidad de autodeterminarse y
+          seleccionar entre diferentes opciones. El autor advierte sobre el riesgo de confundir la
+          libertad con la mera espontaneidad caprichosa o con el consumo superficial.</li>
+        <li><strong>Libertad moral (crecimiento):</strong> Se fortalece mediante la práctica de
+          virtudes (como la fortaleza, la prudencia y la justicia), las cuales amplían la capacidad
+          operativa de la persona. Elegir lo que degrada o perjudica acaba debilita la voluntad y
+          reduce la capacidad de actuar libremente.</li>
+        <li><strong>Realización y proyecto vital:</strong> La libertad adquiere su verdadero valor
+          cuando se encauza hacia metas e ideales altos (magnanimidad) que configuran la propia
+          historia, en lugar de agotarse en elecciones triviales o intrascendentes.</li>
+      </ul>
+
+      <p class="reflexion-question">
+        Pensando en tu propia vida, ¿en qué medida tus decisiones cotidianas responden a un proyecto
+        vital que fortalece tu carácter y amplía tu libertad, o sientes que con frecuencia tu libertad
+        se diluye en la simple reacción a impulsos del momento o a elecciones triviales que te impone
+        el entorno?
+      </p>
+    </div>
+  </div>
+
+  <!-- Three.js r128 (global build) + OrbitControls, cargados desde un CDN estable -->
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="./script.js"></script>
+</body>
+</html>

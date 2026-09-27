@@ -100,6 +100,8 @@
       if (!skipHistory && this.current && this.current !== id) {
         this.history.push(this.current);
       }
+      var leavingFlight = (this.current === 'scene-flight' && id !== 'scene-flight');
+      var enteringFlight = (id === 'scene-flight' && this.current !== 'scene-flight');
       this.current = id;
       var scenes = document.querySelectorAll('.scene');
       for (var i = 0; i < scenes.length; i++) {
@@ -107,6 +109,13 @@
       }
       var target = document.getElementById(id);
       if (target) target.classList.add('active');
+      // Bug fix: el loop de animación 3D (requestAnimationFrame) se detiene
+      // al salir de la escena de vuelo y se reanuda al volver a entrar, para
+      // que no siga renderizando en segundo plano para siempre (eso era lo
+      // que iba saturando el hilo principal y congelaba la página al usar
+      // el botón "Volver").
+      if (leavingFlight && typeof stopFlightAnimation === 'function') stopFlightAnimation();
+      if (enteringFlight && typeof resumeFlightAnimation === 'function') resumeFlightAnimation();
     },
     goBack: function () {
       if (this.history.length === 0) return;
@@ -1012,7 +1021,7 @@
   var flightStartMs = null;
 
   function animate(nowMs) {
-    requestAnimationFrame(animate);
+    flightAnimationFrameId = requestAnimationFrame(animate);
 
     if (flightStartMs === null) flightStartMs = nowMs;
     var t = clamp((nowMs - flightStartMs) / (FLIGHT_ANIM_SECONDS * 1000), 0, 1);
@@ -1085,16 +1094,29 @@
   // 19. Arranque de la Escena 1 (vuelo) y del segundo tramo
   // --------------------------------------------------------------------
   var animateStarted = false;
+  var flightAnimationFrameId = null;
+
+  function stopFlightAnimation() {
+    if (flightAnimationFrameId !== null) {
+      cancelAnimationFrame(flightAnimationFrameId);
+      flightAnimationFrameId = null;
+    }
+    animateStarted = false;
+  }
+
+  function resumeFlightAnimation() {
+    if (!animateStarted) {
+      animateStarted = true;
+      flightAnimationFrameId = requestAnimationFrame(animate);
+    }
+  }
 
   function startFlightScene() {
     SceneManager.activate('scene-flight');
     hideLoadingScreen();
     flightStartMs = null;
     arrivalTriggered = false;
-    if (!animateStarted) {
-      animateStarted = true;
-      requestAnimationFrame(animate);
-    }
+    resumeFlightAnimation();
   }
 
   function startFlightLeg2() {

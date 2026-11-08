@@ -1,1201 +1,1524 @@
 /* ============================================================================
-   Correr para Vivir — Juego Educativo (arquitectura base)
+   Correr para Vivir — MOTOR DE LA EXPERIENCIA
    ----------------------------------------------------------------------------
-   Escena 0: sala de espera ("salaespera.jpg") + audio del capitán
-             ("Audio_capitan.mp3"). El audio NO se corta: suena completo,
-             de principio a fin. A los 49s exactos del audio se muestra,
-             en simultáneo (el audio sigue sonando de fondo), la secuencia
-             de despegue.
-   Despegue: "apuntodespegar.mp4" encadenado sin corte con "despegando.mp4"
-             (el segundo video se precarga antes de que termine el primero).
-   Escena 1: vuelo 3D Bogotá -> Sudán del Sur (Three.js), un solo recorrido
-             de 3.5 segundos con cámara que sigue al avión (por detrás y por
-             encima, como una cámara de persecución) en todo momento. Al
-             llegar, aparece un pin animado y la escena queda estática
-             exactamente 2 segundos antes de abrir la siguiente pantalla.
-   Escena 2: llegada al aeropuerto ("aeropuerto_sudan.jpg") + presentación
-             del guía López Lomong.
-   Escena 3: video "Correr para vivir (primera parte)" + pregunta de opción
-             múltiple. Si la respuesta es incorrecta se puede reintentar; al
-             acertar, se avanza a la Escena 4.
-   Escena 4: video "correrparavivir2.mp4" + pregunta Verdadero/Falso. Al
-             acertar, se repite la Escena 1 (misma lógica/temporización) pero
-             con la ruta Sudán del Sur -> Kenia.
-   Escena 5: video "video_serpersona.mp4" + contexto y pregunta de reflexión
-             (pantalla final, de solo lectura).
+   Cómo funciona (y por qué ya no se congela):
 
-   Notas de corrección de bugs:
-   - Las imágenes/videos viven en una carpeta "assets" HERMANA de esta carpeta
-     ("3D Earth"), no dentro de ella. Por eso todas las rutas usan "assets/…".
-   - Los nombres de archivo con espacios se pasan por encodeURI() para que los
-     espacios no rompan la ruta.
-   - Toda la inicialización de Three.js queda protegida con try/catch y con
-     verificación de que las librerías del CDN sí cargaron, para no volver a
-     dejar la pantalla en blanco si la red falla.
-   - Solo se usa luz ambiental (sin luz direccional/puntual/foco), así que la
-     Tierra nunca tiene lado oscuro ni sombras.
-   - El avión se reconstruyó como una silueta tipo "dardo": la punta (nariz)
-     queda sola en la mitad delantera, y ala + aleta + estabilizador quedan
-     agrupados en la mitad trasera, para que el frente se lea sin ambigüedad
-     desde cualquier ángulo de cámara (antes podía confundirse la cola con el
-     frente y parecer que volaba "al revés"/"hacia atrás").
-   - La cámara de seguimiento ahora persigue al avión por detrás y por encima
-     (como una cámara de tercera persona clásica) en vez de flotar justo
-     encima mirando hacia abajo, lo que hace mucho más evidente el sentido
-     real del vuelo.
-   - El bucle de animación 3D NO arranca al cargar la página: arranca solo
-     cuando termina el despegue, para que los 3.5s de vuelo se cuenten desde
-     ese instante.
-   - La ruta de vuelo (origen/destino/etiquetas/HUD) es reconfigurable
-     mediante configureLeg(), para poder reutilizar exactamente la misma
-     escena y lógica en el segundo tramo (Sudán del Sur -> Kenia).
+   1. El recorrido es una lista de pasos (CONTENT.flow). Cada pantalla se
+      CONSTRUYE al entrar y se DESTRUYE al salir. Sus <video>/<audio> viven
+      dentro de la pantalla, así que al salir se pausan, se descargan y se
+      eliminan: es imposible que sigan sonando por debajo de la siguiente.
+
+   2. Cada pantalla recibe un "scope" con setTimeout / setInterval / on().
+      Al salir, el scope se limpia solo: no quedan temporizadores fantasma
+      (por ejemplo, el de los 49 s del capitán) que disparen saltos raros.
+
+   3. "Volver" lleva a la pantalla de contenido anterior según el orden del
+      recorrido, saltando las de tránsito (despegue, vuelos, videos a
+      pantalla completa). Al volver, el video se reanuda desde donde quedó;
+      si el navegador bloquea el autoplay aparece un botón ▶ grande.
+
+   4. Un único dock inferior controla todo: Volver · play/pausa, barra de
+      progreso, silencio, Saltar · Siguiente. La navegación se bloquea
+      durante la transición para evitar dobles clics.
+
+   5. El único sonido que cruza pantallas es el audio del capitán (intro →
+      despegue → vuelo), tal como se pidió; se apaga con un fundido en
+      cuanto se llega a cualquier otra pantalla o se omite la intro.
 ============================================================================ */
-
 (function () {
   'use strict';
 
-  // --------------------------------------------------------------------
-  // 0. Utilidades
-  // --------------------------------------------------------------------
-  var deg2rad = function (d) { return (d * Math.PI) / 180; };
-  var clamp = function (v, min, max) { return Math.max(min, Math.min(max, v)); };
-  var smoothstep = function (edge0, edge1, x) {
-    var t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
-    return t * t * (3 - 2 * t);
+  var C = window.CONTENT;
+  var FLOW = C.flow;
+  var REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ------------------------------------------------------------------
+  // Iconos (SVG en línea)
+  // ------------------------------------------------------------------
+  var P = {
+    play: '<path d="M7 4.5v15l13-7.5z" fill="currentColor" stroke="none"/>',
+    pause: '<rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/>',
+    vol: '<path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor" stroke="none"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
+    mute: '<path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor" stroke="none"/><path d="M17 9.5l5 5M22 9.5l-5 5"/>',
+    right: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    left: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+    skip: '<path d="M5 5l10 7-10 7z" fill="currentColor" stroke="none"/><path d="M19 5v14"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h10"/>',
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    replay: '<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
+    heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+    spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
+    brain: '<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 3 3zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-3 3z"/>',
+    pulse: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+    wave: '<path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6"/>',
+    key: '<circle cx="8" cy="14" r="4"/><path d="M11 11l8-8M16 6l2 2M14 8l2 2"/>',
+    dna: '<path d="M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9s10 4 10 9M8.5 7h7M8.5 17h7"/>',
+    home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
+    path: '<path d="M5 19c4 0 3-6 7-6s3-6 7-6"/><circle cx="5" cy="19" r="1.6"/><circle cx="19" cy="7" r="1.6"/>',
+    hammer: '<path d="M14 4l6 6-2 2-6-6zM12 6L4 18l2 2 12-8"/>',
+    anchor: '<circle cx="12" cy="5" r="2"/><path d="M12 7v13M5 13a7 7 0 0 0 14 0M9 10h6"/>',
+    cloud: '<path d="M7 18h10a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.6 1.5A3.3 3.3 0 0 0 7 18z"/>',
+    music: '<path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+    balance: '<path d="M12 4v16M7 20h10M5 8h14M5 8l-3 6h6zM19 8l-3 6h6z"/>',
+    hand: '<path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V11M10 10V4.5a1.5 1.5 0 0 1 3 0V10M13 10V5.5a1.5 1.5 0 0 1 3 0V12M16 9.5a1.5 1.5 0 0 1 3 0V14a6 6 0 0 1-6 6h-1a6 6 0 0 1-5-2.7L4.5 13a1.5 1.5 0 0 1 2.5-1.6L8 13"/>',
+    chat: '<path d="M4 5h16v10H9l-5 4z"/>',
+    shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',
+    compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    root: '<path d="M12 3v9M12 12c0 4-4 4-6 8M12 12c0 4 4 4 6 8M12 15v6M8 6c2 0 4 1 4 3M16 6c-2 0-4 1-4 3"/>',
+    hands: '<path d="M12 21s-6-3.8-6-8.5A3.5 3.5 0 0 1 12 10a3.5 3.5 0 0 1 6 2.5C18 17.2 12 21 12 21z"/><path d="M3 12l3 3M21 12l-3 3"/>',
+    users: '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.5A5 5 0 0 1 21 20"/>',
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M8 7h7"/>',
+    lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    plane: '<path d="M10.5 21l1.5-1 1.5 1v-3l-1.5-1 3-1 6 2v-2l-6-4V6a1.5 1.5 0 0 0-3 0v6l-6 4v2l6-2 3 1-1.5 1z" fill="currentColor" stroke="none"/>',
+  };
+  function icon(name, cls) {
+    return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || '') + '</svg>';
+  }
+
+  // ------------------------------------------------------------------
+  // Utilidades DOM
+  // ------------------------------------------------------------------
+  function $(sel, root) { return (root || document).querySelector(sel); }
+  function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  function h(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtTime(s) {
+    if (!isFinite(s) || s < 0) s = 0;
+    var m = Math.floor(s / 60), ss = Math.floor(s % 60);
+    return m + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+  function indexOfId(id) {
+    for (var i = 0; i < FLOW.length; i++) if (FLOW[i].id === id) return i;
+    return -1;
+  }
+  function chapterOf(step) {
+    for (var i = 0; i < C.chapters.length; i++) if (C.chapters[i].id === step.chapter) return C.chapters[i];
+    return C.chapters[0];
+  }
+
+  // ------------------------------------------------------------------
+  // Progreso guardado (localStorage siempre dentro de try/catch)
+  // ------------------------------------------------------------------
+  var STORE_KEY = 'cpv-progreso-v2';
+  var store = (function () {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (raw) {
+        var s = JSON.parse(raw);
+        if (s && typeof s === 'object') {
+          s.steps = s.steps || {}; s.reflections = s.reflections || {};
+          if (typeof s.furthest !== 'number') s.furthest = 0;
+          if (typeof s.current !== 'number') s.current = -1;
+          return s;
+        }
+      }
+    } catch (e) { /* almacenamiento no disponible */ }
+    return { furthest: 0, current: -1, steps: {}, reflections: {} };
+  })();
+  var saveTimer = null;
+  function saveStore(now) {
+    if (saveTimer) clearTimeout(saveTimer);
+    var write = function () { try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e) {} };
+    if (now) write(); else saveTimer = setTimeout(write, 250);
+  }
+  function stepState(id) { return store.steps[id] || (store.steps[id] = {}); }
+
+  // ------------------------------------------------------------------
+  // Scope: temporizadores y listeners que se limpian solos al salir
+  // ------------------------------------------------------------------
+  function Scope() { this.timers = []; this.intervals = []; this.listeners = []; this.cleanups = []; this.alive = true; }
+  Scope.prototype.timeout = function (fn, ms) {
+    var self = this;
+    var id = setTimeout(function () { if (self.alive) fn(); }, ms);
+    this.timers.push(id);
+    return id;
+  };
+  Scope.prototype.interval = function (fn, ms) {
+    var self = this;
+    var id = setInterval(function () { if (self.alive) fn(); }, ms);
+    this.intervals.push(id);
+    return id;
+  };
+  Scope.prototype.on = function (target, ev, fn, opts) {
+    var self = this;
+    var wrapped = function (e) { if (self.alive) fn(e); };
+    target.addEventListener(ev, wrapped, opts);
+    this.listeners.push([target, ev, wrapped, opts]);
+  };
+  Scope.prototype.add = function (fn) { this.cleanups.push(fn); };
+  Scope.prototype.dispose = function () {
+    if (!this.alive) return;
+    this.timers.forEach(clearTimeout);
+    this.intervals.forEach(clearInterval);
+    this.listeners.forEach(function (l) { try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} });
+    this.cleanups.forEach(function (fn) { try { fn(); } catch (e) { console.warn(e); } });
+    this.alive = false;
   };
 
-  function showFatalError(message) {
-    var screen = document.getElementById('loading-screen');
-    if (!screen) return;
-    screen.innerHTML =
-      '<div style="max-width:420px;text-align:center;padding:0 24px;">' +
-      '<div style="font-size:15px;font-weight:600;margin-bottom:8px;color:#ff8a8a;">No se pudo iniciar la escena 3D</div>' +
-      '<div style="font-size:12.5px;opacity:0.8;line-height:1.5;">' + message + '</div>' +
-      '</div>';
-    screen.classList.remove('hidden');
+  // ------------------------------------------------------------------
+  // Medios
+  // ------------------------------------------------------------------
+  var gestureUnlocked = false;
+
+  function makeVideo(src, opts) {
+    opts = opts || {};
+    var v = document.createElement('video');
+    v.setAttribute('playsinline', '');
+    v.setAttribute('webkit-playsinline', '');
+    v.playsInline = true;
+    v.preload = opts.preload || 'auto';
+    if (opts.muted) { v.muted = true; v.setAttribute('muted', ''); v.volume = 0; }
+    if (opts.cls) v.className = opts.cls;
+    v.src = src;
+    return v;
   }
 
-  function hideLoadingScreen() {
-    var screen = document.getElementById('loading-screen');
-    if (screen) screen.classList.add('hidden');
-  }
-
-  if (typeof THREE === 'undefined') {
-    showFatalError('No se pudo cargar Three.js desde el CDN. Verifica tu conexión a internet y vuelve a abrir la página.');
-    return;
-  }
-  if (typeof THREE.OrbitControls === 'undefined') {
-    showFatalError('No se pudo cargar OrbitControls desde el CDN. Verifica tu conexión a internet y vuelve a abrir la página.');
-    return;
-  }
-
-  // --------------------------------------------------------------------
-  // 1. Gestor de escenas
-  // --------------------------------------------------------------------
-  var SceneManager = {
-    history: [],
-    current: null,
-    activate: function (id, opts) {
-      var skipHistory = opts && opts.skipHistory;
-      if (!skipHistory && this.current && this.current !== id) {
-        this.history.push(this.current);
+  function safePlay(media) {
+    if (!media) return Promise.resolve(false);
+    try {
+      var p = media.play();
+      if (p && typeof p.then === 'function') {
+        return p.then(function () { return true; }).catch(function (err) {
+          if (err && err.name === 'AbortError') return false;
+          Media.blocked(media);
+          return false;
+        });
       }
-      var leavingFlight = (this.current === 'scene-flight' && id !== 'scene-flight');
-      var enteringFlight = (id === 'scene-flight' && this.current !== 'scene-flight');
-      this.current = id;
-      var scenes = document.querySelectorAll('.scene');
-      for (var i = 0; i < scenes.length; i++) {
-        scenes[i].classList.remove('active');
-      }
-      var target = document.getElementById(id);
-      if (target) target.classList.add('active');
-      // Bug fix: el loop de animación 3D (requestAnimationFrame) se detiene
-      // al salir de la escena de vuelo y se reanuda al volver a entrar, para
-      // que no siga renderizando en segundo plano para siempre (eso era lo
-      // que iba saturando el hilo principal y congelaba la página al usar
-      // el botón "Volver").
-      if (leavingFlight && typeof stopFlightAnimation === 'function') stopFlightAnimation();
-      if (enteringFlight && typeof resumeFlightAnimation === 'function') resumeFlightAnimation();
-    },
-    goBack: function () {
-      if (this.history.length === 0) return;
-      var previous = this.history.pop();
-      this.activate(previous, { skipHistory: true });
-      this.current = previous;
-    },
-  };
+    } catch (e) { Media.blocked(media); return Promise.resolve(false); }
+    return Promise.resolve(true);
+  }
 
-  // Botón "Volver" genérico: pausa cualquier audio/video de la escena que se
-  // abandona (para no dejar sonido/video cruzado) y regresa a la anterior.
-  document.querySelectorAll('.back-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      document.querySelectorAll('video, audio').forEach(function (media) {
-        if (!media.paused) media.pause();
+  function unloadMediaIn(root) {
+    $$('video, audio', root).forEach(function (m) {
+      try { m.pause(); } catch (e) {}
+      try { m.removeAttribute('src'); m.load(); } catch (e) {}
+    });
+  }
+
+  // Grupo de medios de la pantalla actual (lo controla el dock)
+  var Media = {
+    primary: null,
+    members: [],
+    label: '',
+    resumeSet: null,
+    onBlocked: null,
+    set: function (cfg) {
+      this.primary = cfg ? cfg.primary : null;
+      this.members = cfg ? (cfg.members || (cfg.primary ? [cfg.primary] : [])).filter(Boolean) : [];
+      this.label = cfg && cfg.label ? cfg.label : '';
+      this.onBlocked = cfg && cfg.onBlocked ? cfg.onBlocked : null;
+      this.resumeSet = null;
+      if (this.members.length) {
+        var muted = Media.isMuted();
+        this.members.forEach(function (m) { if (!m.hasAttribute('data-force-muted')) m.muted = muted; });
+      }
+      Dock.renderMedia();
+    },
+    clear: function () { this.set(null); },
+    anyPlaying: function () {
+      return this.members.some(function (m) { return !m.paused && !m.ended; });
+    },
+    toggle: function () {
+      if (!this.members.length) return;
+      if (this.anyPlaying()) this.pause(); else this.play();
+    },
+    pause: function () {
+      this.resumeSet = this.members.filter(function (m) { return !m.paused && !m.ended; });
+      this.members.forEach(function (m) { try { m.pause(); } catch (e) {} });
+      Dock.renderMedia();
+    },
+    play: function () {
+      var set = (this.resumeSet && this.resumeSet.length) ? this.resumeSet : [this.primary || this.members[0]];
+      this.resumeSet = null;
+      set.forEach(function (m) {
+        if (!m) return;
+        if (m.ended && m === Media.primary) { try { m.currentTime = 0; } catch (e) {} }
+        safePlay(m);
       });
-      SceneManager.goBack();
-    });
-  });
+      Dock.renderMedia();
+    },
+    isMuted: function () { return !!store.muted; },
+    toggleMute: function () {
+      store.muted = !store.muted;
+      saveStore();
+      this.members.forEach(function (m) { if (!m.hasAttribute('data-force-muted')) m.muted = store.muted; });
+      if (App.carry && App.carry.el) App.carry.el.muted = store.muted;
+      Dock.renderMedia();
+    },
+    blocked: function (m) {
+      if (Media.members.indexOf(m) < 0) return;
+      if (Media.onBlocked) Media.onBlocked(m);
+      Dock.renderMedia();
+    },
+  };
 
-  // --------------------------------------------------------------------
-  // 2. Configuración general y ciudades de la ruta
-  // --------------------------------------------------------------------
-  var EARTH_RADIUS = 0.5;
-  var CRUISE_ALT_OFFSET = 0.075;
-  var PATH_SEGMENTS = 220;
-  var FLIGHT_ANIM_SECONDS = 4;
-  var CRUISE_SPEED_KMH = 880;
-  var CRUISE_ALT_M = 11000;
-
-  var BOGOTA = { name: 'Bogotá', code: 'BOG', lat: 4.711, lon: -74.0721, tz: 'America/Bogota' };
-  var SUDAN_DEL_SUR = { name: 'Sudán del Sur', code: 'SSD', lat: 4.8517, lon: 31.5825, tz: 'Africa/Juba' };
-  var KENIA = { name: 'Kenia', code: 'KEN', lat: -1.2921, lon: 36.8219, tz: 'Africa/Nairobi' };
-  var ESTADOS_UNIDOS = { name: 'Estados Unidos', code: 'USA', lat: 38.9072, lon: -77.0369, tz: 'America/New_York' };
-
-  function haversineKm(a, b) {
-    var R = 6371;
-    var dLat = deg2rad(b.lat - a.lat);
-    var dLon = deg2rad(b.lon - a.lon);
-    var lat1 = deg2rad(a.lat);
-    var lat2 = deg2rad(b.lat);
-    var h =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
-
-  function latLonToUnitVector(lat, lon) {
-    var phi = deg2rad(90 - lat);
-    var theta = deg2rad(lon + 180);
-    var x = -Math.sin(phi) * Math.cos(theta);
-    var y = Math.cos(phi);
-    var z = Math.sin(phi) * Math.sin(theta);
-    return new THREE.Vector3(x, y, z);
-  }
-
-  function slerpDir(a, b, t, omega) {
-    if (omega < 1e-6) return a.clone().lerp(b, t).normalize();
-    var sinOmega = Math.sin(omega);
-    var f1 = Math.sin((1 - t) * omega) / sinOmega;
-    var f2 = Math.sin(t * omega) / sinOmega;
-    return new THREE.Vector3(
-      a.x * f1 + b.x * f2,
-      a.y * f1 + b.y * f2,
-      a.z * f1 + b.z * f2
-    ).normalize();
-  }
-
-  function altitudeOffsetAt(t) {
-    var climb = smoothstep(0, 0.08, t);
-    var descent = 1 - smoothstep(0.9, 1, t);
-    return CRUISE_ALT_OFFSET * Math.min(climb, descent);
-  }
-
-  function altitudeMetersAt(t) {
-    var climb = smoothstep(0, 0.08, t);
-    var descent = 1 - smoothstep(0.9, 1, t);
-    return CRUISE_ALT_M * Math.min(climb, descent);
-  }
-
-  function speedKmhAt(t) {
-    var climb = smoothstep(0, 0.06, t);
-    var descent = 1 - smoothstep(0.94, 1, t);
-    var base = CRUISE_SPEED_KMH * Math.min(climb, descent);
-    var wobble = Math.sin(t * 90) * 6;
-    return Math.max(0, base + (base > 50 ? wobble : 0));
-  }
-
-  function exteriorTempAt(altitudeM) {
-    var altKm = altitudeM / 1000;
-    return 15 - 6.5 * Math.min(altKm, 11);
-  }
-
-  // Estado de la ruta activa (originDir/destDir/... se recalculan en
-  // configureLeg() para poder reutilizar la misma escena en el segundo
-  // tramo del vuelo).
-  var originDir, destDir, routeAngle, pathPoints;
-  var TOTAL_DISTANCE_KM, FLIGHT_DURATION_HOURS;
-  var currentLeg = null;
-
-  function positionAt(t) {
-    var dir = slerpDir(originDir, destDir, t, routeAngle);
-    var r = EARTH_RADIUS + altitudeOffsetAt(t);
-    return dir.multiplyScalar(r);
-  }
-
-  // --------------------------------------------------------------------
-  // 3. Escena, cámara y renderer
-  // --------------------------------------------------------------------
-  var sceneFlightHost = document.getElementById('scene-flight');
-  var renderer, scene, camera, controls;
-
-  try {
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = false;
-    sceneFlightHost.appendChild(renderer.domElement);
-
-    scene = new THREE.Scene();
-
-    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1500);
-    camera.position.set(1.35, 0.85, 1.1);
-
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.minDistance = 0.75;
-    controls.maxDistance = 6;
-    controls.target.set(0, 0, 0);
-    // La cámara sigue "suave" al avión: solo el punto de mira (target) se
-    // desplaza hacia el avión cada cuadro. La posición de la cámara en sí
-    // queda completamente bajo control de OrbitControls, así que el usuario
-    // puede arrastrar para orbitar y usar la rueda para hacer zoom en
-    // cualquier momento, incluso durante el vuelo, sin perder el seguimiento.
-    controls.enabled = true;
-  } catch (err) {
-    showFatalError('Error creando el contexto WebGL: ' + err.message);
-    return;
-  }
-
-  // --------------------------------------------------------------------
-  // 4. Iluminación — solo luz ambiental: Tierra 100% iluminada, sin sombras
-  // --------------------------------------------------------------------
-  var ambientLight = new THREE.AmbientLight(0xffffff, 1.25);
-  scene.add(ambientLight);
-
-  // --------------------------------------------------------------------
-  // 5. Estrellas de fondo (procedural)
-  // --------------------------------------------------------------------
-  function makeStarSpriteTexture() {
-    var size = 64;
-    var canvas = document.createElement('canvas');
-    canvas.width = canvas.height = size;
-    var ctx = canvas.getContext('2d');
-    var gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    gradient.addColorStop(0, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.4, 'rgba(255,255,255,0.8)');
-    gradient.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, size, size);
-    return new THREE.CanvasTexture(canvas);
-  }
-
-  (function buildStarfield() {
-    var starCount = 3000;
-    var positions = new Float32Array(starCount * 3);
-    for (var i = 0; i < starCount; i++) {
-      var r = 60 + Math.random() * 60;
-      var theta = Math.random() * Math.PI * 2;
-      var phi = Math.acos(2 * Math.random() - 1);
-      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
+  // ------------------------------------------------------------------
+  // Efectos: confeti y avisos
+  // ------------------------------------------------------------------
+  var FX = (function () {
+    var cv = $('#fx'), ctx = cv.getContext('2d'), parts = [], raf = null;
+    var COLORS = ['#e3262f', '#ffffff', '#ff6b6b', '#b3121b', '#f2f2f2'];
+    function resize() {
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cv.width = window.innerWidth * dpr; cv.height = window.innerHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
-    var geometry = new THREE.BufferGeometry();
-    geometry.addAttribute
-      ? geometry.addAttribute('position', new THREE.BufferAttribute(positions, 3))
-      : geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    var material = new THREE.PointsMaterial({
-      size: 0.6,
-      map: makeStarSpriteTexture(),
-      transparent: true,
-      depthWrite: false,
-      color: 0xffffff,
-    });
-    scene.add(new THREE.Points(geometry, material));
+    function loop() {
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      parts = parts.filter(function (p) { return p.life > 0; });
+      parts.forEach(function (p) {
+        p.vy += 0.25; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.rot += p.vr; p.life -= 1;
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, p.life / 30);
+        ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      });
+      if (parts.length) raf = requestAnimationFrame(loop);
+      else { raf = null; ctx.clearRect(0, 0, window.innerWidth, window.innerHeight); }
+    }
+    return {
+      burst: function (x, y, n) {
+        if (REDUCED) return;
+        if (x == null) { x = window.innerWidth / 2; y = window.innerHeight / 2; }
+        resize();
+        n = n || 90;
+        for (var i = 0; i < n; i++) {
+          var a = Math.random() * Math.PI * 2, s = 4 + Math.random() * 9;
+          parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 6, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4,
+            w: 6 + Math.random() * 6, h: 3 + Math.random() * 5, color: COLORS[i % COLORS.length], life: 70 + Math.random() * 40 });
+        }
+        if (!raf) raf = requestAnimationFrame(loop);
+      },
+    };
   })();
 
-  // --------------------------------------------------------------------
-  // 6. Planeta — superficie + nubes + resplandor atmosférico
-  // --------------------------------------------------------------------
-  var textureLoader = new THREE.TextureLoader();
-  textureLoader.crossOrigin = 'anonymous';
+  var toastTimer = null;
+  function toast(msg, kind) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.className = 'show' + (kind ? ' ' + kind : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 2800);
+  }
 
-  var earthGroup = new THREE.Object3D();
-  scene.add(earthGroup);
+  function burstAt(elm, n) {
+    if (!elm) { FX.burst(null, null, n); return; }
+    var r = elm.getBoundingClientRect();
+    FX.burst(r.left + r.width / 2, r.top + r.height / 2, n);
+  }
 
-  var surfaceMaterial = new THREE.MeshPhongMaterial({ color: 0x1c3f66, shininess: 4 });
-  var surface = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS, 64, 64), surfaceMaterial);
-  surface.name = 'surface';
-  earthGroup.add(surface);
+  // ------------------------------------------------------------------
+  // Dock inferior
+  // ------------------------------------------------------------------
+  var Dock = (function () {
+    var dock = $('#dock');
+    var back = $('#btn-back'), next = $('#btn-next'), skip = $('#btn-skip'), hint = $('#dock-hint');
+    var ctl = $('#media-ctl'), play = $('#btn-play'), mute = $('#btn-mute'), seek = $('#media-seek'), time = $('#media-time'), label = $('#media-label'), eq = $('#media-eq');
+    var state = { back: false, next: 'hidden', nextLabel: 'Siguiente', hint: '', skip: null, visible: true };
+    var seeking = false;
+    var quiet = false;
 
-  textureLoader.load(
-    'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg',
-    function (tex) {
-      surfaceMaterial.map = tex;
-      surfaceMaterial.color.set(0xffffff);
-      surfaceMaterial.needsUpdate = true;
-    },
-    undefined,
-    function () { /* sin internet: se conserva el color sólido, nunca invisible */ }
-  );
+    back.innerHTML = icon('left') + '<span>Volver</span>';
+    back.addEventListener('click', function () { App.back(); });
+    next.addEventListener('click', function () { if (state.next === 'enabled') App.next(); });
+    skip.addEventListener('click', function () { if (state.skip && state.skip.fn) state.skip.fn(); });
+    play.addEventListener('click', function () { Media.toggle(); });
+    mute.addEventListener('click', function () { Media.toggleMute(); });
+    seek.addEventListener('input', function () {
+      seeking = true;
+      var m = Media.primary;
+      if (m && isFinite(m.duration) && m.duration > 0) {
+        try { m.currentTime = (seek.value / 1000) * m.duration; } catch (e) {}
+      }
+    });
+    seek.addEventListener('change', function () { seeking = false; });
 
-  var cloudsMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.35, depthWrite: false });
-  var clouds = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS + 0.004, 64, 64), cloudsMaterial);
-  earthGroup.add(clouds);
-
-  textureLoader.load(
-    'https://threejs.org/examples/textures/planets/earth_clouds_1024.png',
-    function (tex) { cloudsMaterial.map = tex; cloudsMaterial.needsUpdate = true; },
-    undefined,
-    function () {}
-  );
-
-  var glowMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      c: { value: 0.55 },
-      p: { value: 4.2 },
-      glowColor: { value: new THREE.Color(0x6fd0ff) },
-      viewVector: { value: camera.position.clone() },
-    },
-    vertexShader: [
-      'uniform vec3 viewVector;',
-      'uniform float c;',
-      'uniform float p;',
-      'varying float intensity;',
-      'void main() {',
-      '  vec3 vNormal = normalize( normalMatrix * normal );',
-      '  vec3 vNormel = normalize( normalMatrix * viewVector );',
-      '  intensity = pow( c - dot(vNormal, vNormel), p );',
-      '  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );',
-      '}',
-    ].join('\n'),
-    fragmentShader: [
-      'uniform vec3 glowColor;',
-      'varying float intensity;',
-      'void main() {',
-      '  vec3 glow = glowColor * intensity;',
-      '  gl_FragColor = vec4( glow, intensity );',
-      '}',
-    ].join('\n'),
-    side: THREE.BackSide,
-    blending: THREE.AdditiveBlending,
-    transparent: true,
-  });
-  var atmosphericGlow = new THREE.Mesh(new THREE.SphereGeometry(EARTH_RADIUS + 0.045, 64, 64), glowMaterial);
-  earthGroup.add(atmosphericGlow);
-
-  // --------------------------------------------------------------------
-  // 7. Trayectoria de círculo máximo (la geometría se recalcula por tramo
-  //    en configureLeg, más abajo)
-  // --------------------------------------------------------------------
-  function buildLineGeometry(points) {
-    var geo = new THREE.BufferGeometry();
-    var arr = new Float32Array(points.length * 3);
-    for (var j = 0; j < points.length; j++) {
-      arr[j * 3] = points[j].x;
-      arr[j * 3 + 1] = points[j].y;
-      arr[j * 3 + 2] = points[j].z;
+    function render() {
+      dock.classList.toggle('hidden', !state.visible);
+      back.hidden = !state.back;
+      if (state.next === 'hidden') {
+        next.hidden = true;
+      } else {
+        var wasHidden = next.hidden || next.disabled;
+        next.hidden = false;
+        next.disabled = state.next === 'disabled';
+        next.innerHTML = '<span>' + esc(state.nextLabel) + '</span>' + icon('right');
+        if (wasHidden && state.next === 'enabled' && !quiet) {
+          next.classList.remove('pop'); void next.offsetWidth; next.classList.add('pop');
+        }
+      }
+      hint.textContent = state.next === 'hidden' ? state.hint : '';
+      hint.hidden = !(state.next === 'hidden' && state.hint);
+      if (state.skip) {
+        skip.hidden = false;
+        skip.innerHTML = '<span>' + esc(state.skip.label) + '</span>' + icon('skip');
+      } else {
+        skip.hidden = true;
+      }
     }
-    geo.addAttribute
-      ? geo.addAttribute('position', new THREE.BufferAttribute(arr, 3))
-      : geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-    return geo;
-  }
 
-  var remainingLine = new THREE.Line(
-    new THREE.BufferGeometry(),
-    new THREE.LineDashedMaterial({ color: 0xffd23f, dashSize: 0.012, gapSize: 0.008, transparent: true, opacity: 0.85 })
-  );
-  earthGroup.add(remainingLine);
+    function renderMedia() {
+      var has = Media.members.length > 0;
+      ctl.hidden = !has;
+      if (!has) return;
+      var playing = Media.anyPlaying();
+      play.innerHTML = icon(playing ? 'pause' : 'play');
+      play.setAttribute('aria-label', playing ? 'Pausar' : 'Reproducir');
+      play.title = playing ? 'Pausar (Espacio)' : 'Reproducir (Espacio)';
+      ctl.classList.toggle('is-playing', playing);
+      var muted = Media.isMuted();
+      mute.innerHTML = icon(muted ? 'mute' : 'vol');
+      mute.setAttribute('aria-label', muted ? 'Activar sonido' : 'Silenciar');
+      label.textContent = Media.label || '';
+      label.hidden = !Media.label;
+      eq.classList.toggle('on', playing);
+    }
 
-  var traveledLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x35d07f, linewidth: 2 }));
-  earthGroup.add(traveledLine);
+    function tick() {
+      var m = Media.primary;
+      if (!m || ctl.hidden) return;
+      var d = m.duration, t = m.currentTime;
+      if (!seeking && isFinite(d) && d > 0) seek.value = Math.round((t / d) * 1000);
+      seek.style.setProperty('--p', (isFinite(d) && d > 0 ? (t / d) * 100 : 0) + '%');
+      time.textContent = fmtTime(t) + ' / ' + fmtTime(d);
+      var playing = Media.anyPlaying();
+      if (playing !== ctl.classList.contains('is-playing')) renderMedia();
+    }
+    setInterval(tick, 250);
 
-  // --------------------------------------------------------------------
-  // 8. Marcadores de ciudades y etiquetas (posiciones reales asignadas en
-  //    configureLeg)
-  // --------------------------------------------------------------------
-  function makeMarker(color, sizeMultiplier) {
-    return new THREE.Mesh(new THREE.SphereGeometry(0.008 * (sizeMultiplier || 1), 16, 16), new THREE.MeshBasicMaterial({ color: color }));
-  }
-
-  var originMarker = makeMarker(0x35d07f, 1.2);
-  earthGroup.add(originMarker);
-
-  var destMarker = makeMarker(0xff6f6f, 1.2);
-  earthGroup.add(destMarker);
-
-  var midMarker = makeMarker(0x6fd0ff, 0.8);
-  earthGroup.add(midMarker);
-
-  var labelDefs = [
-    { obj: originMarker, text: '' },
-    { obj: destMarker, text: '' },
-    { obj: midMarker, text: 'Punto medio de ruta' },
-  ];
-
-  var labelsContainer = document.createElement('div');
-  labelsContainer.id = 'city-labels';
-  labelsContainer.style.position = 'fixed';
-  labelsContainer.style.left = '0';
-  labelsContainer.style.top = '0';
-  labelsContainer.style.width = '100%';
-  labelsContainer.style.height = '100%';
-  labelsContainer.style.pointerEvents = 'none';
-  labelsContainer.style.zIndex = '5';
-  sceneFlightHost.appendChild(labelsContainer);
-
-  labelDefs.forEach(function (def) {
-    var el = document.createElement('div');
-    el.textContent = def.text;
-    el.style.position = 'absolute';
-    el.style.transform = 'translate(-50%, -160%)';
-    el.style.padding = '3px 8px';
-    el.style.borderRadius = '999px';
-    el.style.fontSize = '10.5px';
-    el.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-    el.style.color = '#eaf4ff';
-    el.style.background = 'rgba(8, 13, 24, 0.65)';
-    el.style.border = '1px solid rgba(130, 190, 255, 0.3)';
-    el.style.whiteSpace = 'nowrap';
-    el.style.backdropFilter = 'blur(4px)';
-    labelsContainer.appendChild(el);
-    def.el = el;
-  });
-
-  var tmpVec = new THREE.Vector3();
-  function worldToScreen(object3D) {
-    var worldPos = object3D.getWorldPosition(tmpVec.clone());
-    var normal = worldPos.clone().normalize();
-    var toCam = camera.position.clone().sub(worldPos).normalize();
-    var facingCamera = normal.dot(toCam) > 0.05;
-    var projected = worldPos.clone().project(camera);
-    var behindCamera = projected.z > 1;
     return {
-      visible: facingCamera && !behindCamera,
-      x: (projected.x * 0.5 + 0.5) * window.innerWidth,
-      y: (-projected.y * 0.5 + 0.5) * window.innerHeight,
+      set: function (patch) {
+        Object.keys(patch).forEach(function (k) { state[k] = patch[k]; });
+        render();
+      },
+      get: function () { return state; },
+      renderMedia: renderMedia,
+      quiet: function (q) { quiet = q; },
+      reset: function () {
+        state = { back: false, next: 'hidden', nextLabel: 'Siguiente', hint: '', skip: null, visible: true };
+        render();
+      },
+    };
+  })();
+
+  // ------------------------------------------------------------------
+  // Barra superior y menú de capítulos
+  // ------------------------------------------------------------------
+  var Top = (function () {
+    var chapterEl = $('#top-chapter'), fill = $('#top-progress-fill'), count = $('#top-count');
+    var menu = $('#menu'), list = $('#menu-list');
+    $('#btn-menu').innerHTML = icon('menu');
+    $('#btn-fullscreen').innerHTML = icon('full');
+    $('#btn-menu-close').innerHTML = icon('close');
+
+    $('#btn-menu').addEventListener('click', function () { open(); });
+    $('#btn-menu-close').addEventListener('click', function () { close(); });
+    menu.addEventListener('click', function (e) { if (e.target === menu) close(); });
+    $('#btn-fullscreen').addEventListener('click', function () {
+      try {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
+      } catch (e) {}
+    });
+    var restartArmed = false, restartTimer = null;
+    $('#btn-restart').addEventListener('click', function () {
+      var b = $('#btn-restart');
+      if (!restartArmed) {
+        restartArmed = true;
+        b.textContent = '¿Seguro? Toca otra vez para borrar el progreso';
+        b.classList.add('armed');
+        clearTimeout(restartTimer);
+        restartTimer = setTimeout(function () { restartArmed = false; b.textContent = 'Reiniciar el viaje'; b.classList.remove('armed'); }, 4000);
+        return;
+      }
+      restartArmed = false; b.textContent = 'Reiniciar el viaje'; b.classList.remove('armed');
+      App.restart();
+      close();
+    });
+
+    function firstIndex(chId) {
+      for (var i = 0; i < FLOW.length; i++) if (FLOW[i].chapter === chId) return i;
+      return -1;
+    }
+
+    function buildList() {
+      list.innerHTML = '';
+      var curCh = App.index >= 0 ? FLOW[App.index].chapter : null;
+      C.chapters.forEach(function (ch, n) {
+        var fi = firstIndex(ch.id);
+        if (fi < 0) return;
+        var unlocked = fi <= store.furthest;
+        var li = h('li', 'menu-item' + (ch.id === curCh ? ' current' : '') + (unlocked ? '' : ' locked'));
+        var b = h('button', 'menu-btn',
+          '<span class="menu-n">' + (n === 0 ? 'P' : n) + '</span><span class="menu-t">' + esc(ch.title) + '</span>' +
+          (unlocked ? (ch.id === curCh ? '<span class="menu-s">Aquí estás</span>' : icon('right')) : icon('lock')));
+        b.type = 'button';
+        b.disabled = !unlocked;
+        b.addEventListener('click', function () { close(); App.jump(fi); });
+        li.appendChild(b);
+        list.appendChild(li);
+      });
+    }
+
+    var lastFocus = null;
+    function open() {
+      buildList();
+      lastFocus = document.activeElement;
+      menu.hidden = false;
+      requestAnimationFrame(function () { menu.classList.add('open'); });
+      var first = $('.menu-btn:not([disabled])', menu);
+      if (first) first.focus();
+    }
+    function close() {
+      menu.classList.remove('open');
+      setTimeout(function () { menu.hidden = true; }, 220);
+      if (lastFocus && lastFocus.focus) try { lastFocus.focus(); } catch (e) {}
+    }
+
+    return {
+      update: function () {
+        var step = FLOW[App.index];
+        var ch = chapterOf(step);
+        chapterEl.textContent = ch.title;
+        var frac = App.index / (FLOW.length - 1);
+        fill.style.transform = 'scaleX(' + frac.toFixed(4) + ')';
+        count.textContent = (App.index + 1) + ' / ' + FLOW.length;
+      },
+      open: open,
+      close: close,
+      isOpen: function () { return !menu.hidden; },
+    };
+  })();
+
+  // ------------------------------------------------------------------
+  // Motor de navegación
+  // ------------------------------------------------------------------
+  var stage = $('#stage');
+
+  var App = {
+    index: -1,
+    cur: null,
+    busy: false,
+    carry: null,
+
+    prevContentIndex: function (i) {
+      for (var j = i - 1; j >= 0; j--) if (!FLOW[j].skipOnBack) return j;
+      return -1;
+    },
+
+    go: function (i, opts) {
+      opts = opts || {};
+      if (i < 0 || i >= FLOW.length) return false;
+      if (App.busy && !opts.force) return false;
+      App.busy = true;
+      var step = FLOW[i];
+
+      // 1) salir de la pantalla actual
+      var prev = App.cur;
+      if (prev) {
+        try { if (prev.api && prev.api.leave) prev.api.leave(); } catch (e) { console.warn(e); }
+        prev.scope.dispose();
+        unloadMediaIn(prev.el);
+      }
+      Media.clear();
+      Dock.reset();
+      clearTimeout(toastTimer); $('#toast').className = '';
+
+      // 2) audio del capitán: solo continúa en intro → despegue → primer vuelo
+      if (App.carry && App.carry.keep.indexOf(step.id) < 0) App.stopCarry(true);
+
+      // 3) construir la nueva pantalla
+      var el = h('section', 'scene scene-' + step.type + (opts.dir < 0 ? ' from-left' : ''));
+      el.dataset.step = step.id;
+      stage.appendChild(el);
+      var scope = new Scope();
+      var ctx = makeCtx(step, el, scope, i);
+      App.index = i;
+      App.cur = { step: step, el: el, scope: scope, api: null, ctx: ctx };
+
+      document.body.className = 'type-' + step.type + (step.type === 'intro' ? ' is-intro' : '') +
+        (IMMERSIVE[step.type] ? ' immersive' : '');
+
+      var prevIdx = App.prevContentIndex(i);
+      Dock.set({ back: prevIdx >= 0 && !step.skipOnBack ? true : (prevIdx >= 0 && step.type === 'cinematic'), visible: true });
+
+      Dock.quiet(true);
+      try {
+        App.cur.api = (Renderers[step.type] || Renderers.unknown)(ctx) || {};
+      } catch (err) {
+        console.error(err);
+        el.innerHTML = '<div class="center-card"><h2>Ups, algo falló en esta pantalla</h2><p>Puedes continuar con el recorrido.</p></div>';
+        Dock.set({ next: 'enabled' });
+        App.cur.api = {};
+      }
+      Dock.quiet(false);
+
+      // 4) transición
+      if (prev) {
+        var old = prev.el;
+        old.classList.add('out');
+        setTimeout(function () { if (old.parentNode) old.parentNode.removeChild(old); }, 520);
+      }
+      requestAnimationFrame(function () { requestAnimationFrame(function () { el.classList.add('in'); }); });
+      setTimeout(function () { App.busy = false; }, 420);
+
+      // 5) progreso
+      if (i > store.furthest) store.furthest = i;
+      if (!step.skipOnBack) store.current = i;
+      saveStore();
+      Top.update();
+      try { stage.scrollTop = 0; } catch (e) {}
+      return true;
+    },
+
+    next: function () {
+      var api = App.cur && App.cur.api;
+      if (api && api.onNext && api.onNext()) return;
+      App.go(App.index + 1, { dir: 1 });
+    },
+    forceNext: function () { App.go(App.index + 1, { dir: 1, force: true }); },
+    back: function () {
+      var api = App.cur && App.cur.api;
+      if (api && api.onBack && api.onBack()) return;
+      var j = App.prevContentIndex(App.index);
+      if (j >= 0) App.go(j, { dir: -1 });
+    },
+    jump: function (i) {
+      App.stopCarry(false);
+      App.go(i, { dir: i < App.index ? -1 : 1, force: true });
+    },
+    stopCarry: function (fade) {
+      var c = App.carry;
+      if (!c) return;
+      App.carry = null;
+      var a = c.el;
+      if (!fade || REDUCED) { try { a.pause(); a.removeAttribute('src'); a.load(); } catch (e) {} if (a.parentNode) a.parentNode.removeChild(a); return; }
+      var v0 = a.volume, steps = 12, n = 0;
+      var t = setInterval(function () {
+        n++;
+        try { a.volume = Math.max(0, v0 * (1 - n / steps)); } catch (e) {}
+        if (n >= steps) {
+          clearInterval(t);
+          try { a.pause(); a.removeAttribute('src'); a.load(); } catch (e) {}
+          if (a.parentNode) a.parentNode.removeChild(a);
+        }
+      }, 50);
+    },
+    skipIntro: function () {
+      App.stopCarry(false);
+      try { Earth.preload(); } catch (e) {}
+      App.go(indexOfId('flight-1'), { dir: 1, force: true });
+    },
+    restart: function () {
+      App.stopCarry(false);
+      store = { furthest: 0, current: -1, steps: {}, reflections: {}, muted: store.muted };
+      saveStore(true);
+      App.go(0, { dir: -1, force: true });
+    },
+  };
+
+  var IMMERSIVE = { intro: true, takeoff: true, flight: true, cinematic: true, dialogue: true };
+
+  function makeCtx(step, el, scope, index) {
+    var state = stepState(step.id);
+    return {
+      step: step, el: el, scope: scope, state: state, index: index,
+      gate: function (open, hintText) {
+        if (!scope.alive) return;
+        Dock.set({ next: open ? 'enabled' : 'hidden', hint: open ? '' : (hintText || '') });
+      },
+      next: function () { if (scope.alive) App.forceNext(); },
+      save: function () { saveStore(); },
     };
   }
 
-  function updateLabels() {
-    labelDefs.forEach(function (def) {
-      var screen = worldToScreen(def.obj);
-      def.el.style.opacity = screen.visible ? '1' : '0';
-      if (screen.visible) {
-        def.el.style.left = screen.x + 'px';
-        def.el.style.top = screen.y + 'px';
-      }
+  // ------------------------------------------------------------------
+  // Componentes reutilizables
+  // ------------------------------------------------------------------
+
+  // Reproductor de video con overlay ▶, reanudación y brillo al reproducir
+  function createPlayer(ctx, src, opts) {
+    opts = opts || {};
+    var wrap = h('div', 'player');
+    var v = makeVideo(src, { preload: 'auto' });
+    v.className = 'player-video';
+    wrap.appendChild(v);
+    var overlay = h('button', 'player-overlay', '<span class="po-circle">' + icon('play') + '</span><span class="po-text">Reproducir</span>');
+    overlay.type = 'button';
+    overlay.setAttribute('aria-label', 'Reproducir video');
+    wrap.appendChild(overlay);
+    var badge = h('div', 'player-badge', '<span class="eq on"><i></i><i></i><i></i><i></i></span><span>Reproduciendo</span>');
+    wrap.appendChild(badge);
+    var err = h('div', 'player-error', '<strong>No se pudo cargar el video.</strong><span>Revisa tu conexión. Puedes continuar con la actividad.</span>');
+    wrap.appendChild(err);
+
+    var st = ctx.state;
+    ctx.scope.on(v, 'loadedmetadata', function () {
+      if (st.t && st.t > 0.5 && st.t < v.duration - 1) { try { v.currentTime = st.t; } catch (e) {} }
+    });
+    function sync() {
+      wrap.classList.toggle('playing', !v.paused && !v.ended);
+      wrap.classList.toggle('paused', v.paused && !v.ended);
+      overlay.querySelector('.po-text').textContent = v.ended ? 'Ver de nuevo' : (v.currentTime > 0.3 ? 'Continuar' : 'Reproducir');
+      overlay.querySelector('.po-circle').innerHTML = icon(v.ended ? 'replay' : 'play');
+      Dock.renderMedia();
+    }
+    ctx.scope.on(v, 'play', sync);
+    ctx.scope.on(v, 'pause', sync);
+    ctx.scope.on(v, 'ended', function () { wrap.classList.add('ended'); st.t = 0; ctx.save(); sync(); if (opts.onEnded) opts.onEnded(); });
+    ctx.scope.on(v, 'playing', function () { wrap.classList.remove('ended', 'loading', 'error'); });
+    ctx.scope.on(v, 'waiting', function () { wrap.classList.add('loading'); });
+    ctx.scope.on(v, 'canplay', function () { wrap.classList.remove('loading'); });
+    ctx.scope.on(v, 'error', function () { wrap.classList.add('error'); sync(); });
+    ctx.scope.on(v, 'click', function () { Media.toggle(); });
+    ctx.scope.on(overlay, 'click', function () {
+      if (v.ended) { try { v.currentTime = 0; } catch (e) {} }
+      wrap.classList.remove('ended');
+      safePlay(v);
+    });
+    ctx.scope.interval(function () { if (!v.paused) { st.t = v.currentTime; ctx.save(); } }, 1500);
+    ctx.scope.add(function () { st.t = v.ended ? 0 : v.currentTime; saveStore(); });
+
+    Media.set({ primary: v, members: [v], label: opts.label || '' });
+    wrap.classList.add('paused', 'loading');
+    sync();
+    safePlay(v);
+    return { el: wrap, video: v };
+  }
+
+  // Opciones de selección múltiple con evaluación inmediata
+  function mountChoices(container, cfg) {
+    // cfg: { options:[{letter,text,correct}], solved, onSolved, wrongText, explanation, wrongPicked:[] }
+    var list = h('div', 'choices');
+    var fb = h('div', 'feedback', '');
+    fb.hidden = true;
+    var buttons = cfg.options.map(function (o, idx) {
+      var b = h('button', 'choice reveal', '<span class="choice-letter">' + esc(o.letter) + '</span><span class="choice-text">' + o.text + '</span><span class="choice-mark"></span>');
+      b.type = 'button';
+      b.style.setProperty('--i', idx);
+      b.dataset.idx = idx;
+      list.appendChild(b);
+      return b;
+    });
+    container.appendChild(list);
+    container.appendChild(fb);
+
+    function showCorrect(btn, animate) {
+      buttons.forEach(function (b) { b.disabled = true; });
+      btn.classList.add('correct');
+      btn.querySelector('.choice-mark').innerHTML = icon('check');
+      fb.hidden = false;
+      fb.className = 'feedback ok' + (animate ? ' pop' : '');
+      fb.innerHTML = '<div class="fb-title">' + icon('check') + '¡Correcto!</div>' + (cfg.explanation ? '<p>' + cfg.explanation + '</p>' : '');
+    }
+    (cfg.wrongPicked || []).forEach(function (i) {
+      var b = buttons[i];
+      if (b) { b.classList.add('wrong'); b.disabled = true; b.querySelector('.choice-mark').innerHTML = icon('x'); }
+    });
+    if (cfg.solved) {
+      var ci = cfg.options.findIndex(function (o) { return o.correct; });
+      showCorrect(buttons[ci], false);
+    }
+    buttons.forEach(function (b, idx) {
+      b.addEventListener('click', function () {
+        if (cfg.solved) return;
+        var o = cfg.options[idx];
+        if (o.correct) {
+          cfg.solved = true;
+          showCorrect(b, true);
+          burstAt(b, 70);
+          if (cfg.onSolved) cfg.onSolved();
+        } else {
+          b.classList.remove('shake'); void b.offsetWidth;
+          b.classList.add('wrong', 'shake');
+          b.disabled = true;
+          b.querySelector('.choice-mark').innerHTML = icon('x');
+          fb.hidden = false;
+          fb.className = 'feedback bad';
+          fb.innerHTML = '<div class="fb-title">' + icon('x') + 'Incorrecto</div><p>' + esc(cfg.wrongText || 'Inténtalo de nuevo.') + '</p>';
+          if (cfg.onWrong) cfg.onWrong(idx);
+        }
+      });
+    });
+    return { buttons: buttons };
+  }
+
+  function header(step, extraCls) {
+    var hd = h('header', 'act-head' + (extraCls ? ' ' + extraCls : ''));
+    if (step.kicker) hd.appendChild(h('div', 'kicker reveal', esc(step.kicker)));
+    if (step.title) hd.appendChild(h('h2', 'act-title reveal', esc(step.title)));
+    if (step.intro) hd.appendChild(h('p', 'act-intro reveal', esc(step.intro)));
+    return hd;
+  }
+
+  // Entrada escalonada. Al terminar la animación se quita la clase, para que
+  // otras animaciones (sacudida, acierto…) no vuelvan a ocultar el elemento.
+  function stagger(root) {
+    $$('.reveal', root).forEach(function (n, i) {
+      if (!n.style.getPropertyValue('--i')) n.style.setProperty('--i', i);
+      n.addEventListener('animationend', function done(e) {
+        if (e.target !== n || e.animationName !== 'rise') return;
+        n.classList.remove('reveal');
+        n.removeEventListener('animationend', done);
+      });
     });
   }
 
-  // Referencias de HUD que configureLeg() actualiza por tramo.
-  var routeOriginCodeEl = document.getElementById('route-origin-code');
-  var routeDestCodeEl = document.getElementById('route-dest-code');
-  var clockCityOriginEl = document.getElementById('clock-city-origin');
-  var clockCityDestinationEl = document.getElementById('clock-city-destination');
-  var arrivalPinLabelEl = document.getElementById('arrival-pin-label');
+  // ------------------------------------------------------------------
+  // Renderizadores por tipo de pantalla
+  // ------------------------------------------------------------------
+  var Renderers = {};
 
-  // --------------------------------------------------------------------
-  // 8b. configureLeg — deja lista la escena 3D para un tramo de vuelo
-  //     concreto (origen -> destino) y qué hacer al llegar.
-  // --------------------------------------------------------------------
-  function configureLeg(origin, destination, onArrival) {
-    currentLeg = { origin: origin, destination: destination, onArrival: onArrival };
+  // ---------- INTRO: sala de espera + audio del capitán ----------
+  Renderers.intro = function (ctx) {
+    var s = ctx.step;
+    Dock.set({ visible: false });
+    var resumeIdx = store.current;
+    var canResume = resumeIdx > indexOfId('flight-1') && resumeIdx < FLOW.length;
+    ctx.el.innerHTML =
+      '<div class="bg kenburns" style="background-image:url(\'' + s.bg + '\')"></div>' +
+      '<div class="shade"></div>' +
+      '<div class="intro-wrap">' +
+      '  <div class="intro-tag reveal">' + icon('plane') + '<span>Experiencia interactiva</span></div>' +
+      '  <h1 class="intro-title reveal">Correr<br/><span>para Vivir</span></h1>' +
+      '  <p class="intro-sub reveal">' + esc(s.subtitle) + '</p>' +
+      '  <div class="intro-actions reveal">' +
+      '    <button class="btn btn-primary btn-lg" data-act="start" type="button">' + icon('play') + '<span>Comenzar el viaje</span></button>' +
+      '    <button class="btn btn-ghost btn-lg" data-act="skip" type="button"><span>Omitir intro</span>' + icon('skip') + '</button>' +
+      '  </div>' +
+      (canResume ? '  <button class="btn btn-link reveal" data-act="resume" type="button">' + icon('replay') + '<span>Continuar donde quedaste · ' + esc(chapterOf(FLOW[resumeIdx]).short) + '</span></button>' : '') +
+      '  <p class="intro-hint reveal">Activa el sonido · Se recomienda usar audífonos</p>' +
+      '</div>' +
+      '<div class="captain" hidden>' +
+      '  <div class="captain-eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+      '  <div class="captain-text"><strong>' + esc(s.caption) + '</strong><span>Prepárate: el despegue comenzará en breve</span></div>' +
+      '  <div class="captain-bar"><div></div></div>' +
+      '</div>';
+    stagger(ctx.el);
 
-    originDir = latLonToUnitVector(origin.lat, origin.lon).normalize();
-    destDir = latLonToUnitVector(destination.lat, destination.lon).normalize();
-    routeAngle = originDir.angleTo(destDir);
-    TOTAL_DISTANCE_KM = haversineKm(origin, destination);
-    FLIGHT_DURATION_HOURS = TOTAL_DISTANCE_KM / (CRUISE_SPEED_KMH * 0.93);
+    var captain = $('.captain', ctx.el);
+    var bar = $('.captain-bar div', ctx.el);
+    var started = false;
 
-    pathPoints = [];
-    for (var i = 0; i <= PATH_SEGMENTS; i++) {
-      var dir = slerpDir(originDir, destDir, i / PATH_SEGMENTS, routeAngle);
-      pathPoints.push(dir.multiplyScalar(EARTH_RADIUS + CRUISE_ALT_OFFSET));
+    function start() {
+      if (started) return;
+      started = true;
+      gestureUnlocked = true;
+      ctx.el.classList.add('started');
+      captain.hidden = false;
+      try { Earth.preload(); } catch (e) {}
+
+      var a = document.createElement('audio');
+      a.preload = 'auto';
+      a.src = s.audio;
+      a.muted = Media.isMuted();
+      $('#persist').appendChild(a);
+      App.carry = { el: a, keep: ['intro', 'takeoff', 'flight-1'] };
+
+      Media.set({ primary: a, members: [a], label: s.caption });
+      Dock.set({ visible: true, back: false, skip: { label: 'Omitir intro', fn: App.skipIntro } });
+
+      var failed = false, virtual = 0, last = performance.now();
+      a.addEventListener('error', function () { failed = true; });
+      safePlay(a).then(function (ok) { if (!ok && a.paused) failed = true; });
+
+      ctx.scope.interval(function () {
+        var now = performance.now(), dt = (now - last) / 1000; last = now;
+        var tNow;
+        if (!failed && a.readyState > 0 && !a.error) { tNow = a.currentTime; }
+        else { if (!Media.resumeSet) virtual += dt; tNow = virtual; }
+        bar.style.transform = 'scaleX(' + Math.min(1, tNow / s.transitionAt).toFixed(3) + ')';
+        if (tNow >= s.transitionAt) ctx.next();
+      }, 200);
     }
 
-    traveledLine.geometry.dispose();
-    traveledLine.geometry = buildLineGeometry(pathPoints);
-    traveledLine.geometry.setDrawRange(0, 0);
-
-    remainingLine.geometry.dispose();
-    remainingLine.geometry = buildLineGeometry(pathPoints);
-    remainingLine.computeLineDistances();
-
-    originMarker.position.copy(originDir.clone().multiplyScalar(EARTH_RADIUS + 0.002));
-    destMarker.position.copy(destDir.clone().multiplyScalar(EARTH_RADIUS + 0.002));
-    var midDir = slerpDir(originDir, destDir, 0.5, routeAngle);
-    midMarker.position.copy(midDir.clone().multiplyScalar(EARTH_RADIUS + CRUISE_ALT_OFFSET));
-
-    labelDefs[0].text = origin.name + ' (' + origin.code + ')';
-    labelDefs[0].el.textContent = labelDefs[0].text;
-    labelDefs[1].text = destination.name + ' (' + destination.code + ')';
-    labelDefs[1].el.textContent = labelDefs[1].text;
-
-    if (routeOriginCodeEl) routeOriginCodeEl.textContent = origin.code;
-    if (routeDestCodeEl) routeDestCodeEl.textContent = destination.code;
-    if (clockCityOriginEl) clockCityOriginEl.textContent = origin.name + ' (origen)';
-    if (clockCityDestinationEl) clockCityDestinationEl.textContent = destination.name + ' (destino)';
-    if (arrivalPinLabelEl) arrivalPinLabelEl.textContent = destination.name;
-
-    flightStartMs = null;
-    arrivalTriggered = false;
-  }
-
-  // --------------------------------------------------------------------
-  // 9. Avión 3D — silueta tipo "dardo": la nariz queda sola en la mitad
-  //    delantera y ala+aleta+estabilizador agrupados en la mitad trasera,
-  //    para que el frente se lea sin ambigüedad desde cualquier ángulo.
-  //    (assets/foto_avion.jpg se usa como referencia visual y como
-  //    miniatura en el HUD/favicon).
-  // --------------------------------------------------------------------
-  function buildPlane() {
-    var group = new THREE.Group();
-    var bodyMat = new THREE.MeshBasicMaterial({ color: 0xf4f7fb });
-    var accentMat = new THREE.MeshBasicMaterial({ color: 0xe23b3b });
-    var glassMat = new THREE.MeshBasicMaterial({ color: 0x2c3e50 });
-
-    // Fuselaje: un cono largo con la geometría pre-rotada para que su
-    // punta (apex, originalmente en +Y) quede en -Z. Object3D.lookAt()
-    // orienta el eje -Z local del objeto hacia el objetivo, así que -Z
-    // ES el "frente" del modelo: la punta del cono queda mirando siempre
-    // hacia donde vuela el avión.
-    var bodyGeo = new THREE.ConeGeometry(0.0032, 0.055, 10);
-    bodyGeo.rotateX(-Math.PI / 2);
-    group.add(new THREE.Mesh(bodyGeo, bodyMat));
-
-    // Cabina, justo detrás de la punta (mitad delantera, sin nada más
-    // alrededor para que la nariz se lea con claridad).
-    var cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.0021, 10, 10), glassMat);
-    cockpit.position.set(0, 0.0018, -0.014);
-    group.add(cockpit);
-
-    // Ala principal — en la mitad TRASERA del cuerpo (no en el centro),
-    // para reforzar visualmente cuál extremo es la cola.
-    var wing = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.0007, 0.009), bodyMat);
-    wing.position.set(0, 0, 0.007);
-    group.add(wing);
-
-    // Aleta vertical de cola, cerca de la punta trasera.
-    var fin = new THREE.Mesh(new THREE.BoxGeometry(0.0007, 0.009, 0.011), accentMat);
-    fin.position.set(0, 0.0045, 0.021);
-    group.add(fin);
-
-    // Estabilizador horizontal, en el extremo trasero.
-    var stab = new THREE.Mesh(new THREE.BoxGeometry(0.017, 0.0006, 0.005), bodyMat);
-    stab.position.set(0, 0, 0.0235);
-    group.add(stab);
-
-    return group;
-  }
-
-  var plane = buildPlane();
-  earthGroup.add(plane);
-  plane.add(new THREE.PointLight(0xffffff, 0.4, 0.2));
-
-  // --------------------------------------------------------------------
-  // 10. HUD / Telemetría — referencias del DOM
-  // --------------------------------------------------------------------
-  var el = {
-    progressFill: document.getElementById('progress-fill'),
-    progressPct: document.getElementById('progress-pct'),
-    speed: document.getElementById('stat-speed'),
-    altitude: document.getElementById('stat-altitude'),
-    altitudeFt: document.getElementById('stat-altitude-ft'),
-    temp: document.getElementById('stat-temp'),
-    eta: document.getElementById('stat-eta'),
-    clockOrigin: document.getElementById('clock-origin'),
-    clockDestination: document.getElementById('clock-destination'),
+    ctx.scope.on($('[data-act="start"]', ctx.el), 'click', start);
+    ctx.scope.on($('[data-act="skip"]', ctx.el), 'click', function () { gestureUnlocked = true; App.skipIntro(); });
+    var rb = $('[data-act="resume"]', ctx.el);
+    if (rb) ctx.scope.on(rb, 'click', function () { gestureUnlocked = true; try { Earth.preload(); } catch (e) {} App.jump(resumeIdx); });
+    return {};
   };
 
-  // El punto de mira de la cámara sigue al avión siempre, pero la posición
-  // de la cámara la sigue controlando el usuario (orbitar/zoom libres).
-  var followPlane = true;
+  // ---------- DESPEGUE: dos videos encadenados sin corte ----------
+  Renderers.takeoff = function (ctx) {
+    var s = ctx.step;
+    var v1 = makeVideo(s.videos[0], { cls: 'fs-video' });
+    var v2 = makeVideo(s.videos[1], { cls: 'fs-video is-hidden' });
+    ctx.el.appendChild(v1);
+    ctx.el.appendChild(v2);
+    var play = h('button', 'big-play', '<span class="po-circle">' + icon('play') + '</span><span class="po-text">Toca para continuar</span>');
+    play.type = 'button'; play.hidden = true;
+    ctx.el.appendChild(play);
+    var current = v1;
+    var carry = App.carry ? App.carry.el : null;
 
-  function formatHM(hoursFloat) {
-    var totalMinutes = Math.max(0, Math.round(hoursFloat * 60));
-    var h = Math.floor(totalMinutes / 60);
-    var m = totalMinutes % 60;
-    return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
-  }
-
-  function updateClocks() {
-    if (!currentLeg) return;
-    try {
-      var now = new Date();
-      var fmt = function (tz) {
-        return new Intl.DateTimeFormat('es-CO', { timeZone: tz, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(now);
-      };
-      if (el.clockOrigin) el.clockOrigin.textContent = fmt(currentLeg.origin.tz);
-      if (el.clockDestination) el.clockDestination.textContent = fmt(currentLeg.destination.tz);
-    } catch (e) { /* Intl con zona horaria no soportado: se deja el placeholder */ }
-  }
-  updateClocks();
-  setInterval(updateClocks, 1000);
-
-  // --------------------------------------------------------------------
-  // 11. Escena 2 — Llegada (aeropuerto + López Lomong)
-  // --------------------------------------------------------------------
-  var lopezEl = document.getElementById('lopez');
-  var dialogueBox = document.getElementById('dialogue-box');
-  var dialogueContinueBtn = document.getElementById('dialogue-continue');
-
-  function startArrivalScene() {
-    SceneManager.activate('scene-arrival');
-    lopezEl.classList.remove('offscreen-right');
-    lopezEl.classList.add('offscreen-left');
-    dialogueBox.classList.remove('visible');
-    dialogueBox.classList.add('hidden');
-
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        lopezEl.classList.remove('offscreen-left');
-        setTimeout(function () {
-          dialogueBox.classList.remove('hidden');
-          dialogueBox.classList.add('visible');
-        }, 500);
+    Dock.set({ back: false, skip: { label: 'Omitir intro', fn: App.skipIntro } });
+    function bind(v) {
+      Media.set({ primary: v, members: [v, carry], label: 'Despegue', onBlocked: function () { play.hidden = false; } });
+    }
+    bind(v1);
+    ctx.scope.on(play, 'click', function () { play.hidden = true; safePlay(current); });
+    ctx.scope.on(v1, 'playing', function () { play.hidden = true; });
+    ctx.scope.on(v1, 'ended', function () {
+      current = v2;
+      v2.classList.remove('is-hidden');
+      v1.classList.add('is-hidden');
+      bind(v2);
+      safePlay(v2);
+    });
+    ctx.scope.on(v2, 'playing', function () { play.hidden = true; });
+    ctx.scope.on(v2, 'ended', function () { ctx.next(); });
+    [v1, v2].forEach(function (v) {
+      ctx.scope.on(v, 'error', function () {
+        toast('No se pudo cargar el video del despegue. Continuamos el viaje.');
+        ctx.scope.timeout(ctx.next, 1200);
       });
     });
-  }
+    safePlay(v1);
+    return {};
+  };
 
-  dialogueContinueBtn.addEventListener('click', function () {
-    dialogueBox.classList.remove('visible');
-    dialogueBox.classList.add('hidden');
-    lopezEl.classList.remove('offscreen-left');
-    lopezEl.classList.add('offscreen-right');
-    setTimeout(startQuizScene, 900);
-  });
+  // ---------- VUELO 3D ----------
+  Renderers.flight = function (ctx) {
+    var s = ctx.step;
+    var layer = $('#earth-layer');
+    layer.classList.add('on');
+    ctx.el.innerHTML = '<div class="flight-loading"><div class="spinner"></div><span>Preparando el vuelo…</span></div>' +
+      '<div class="flight-title reveal"><span>' + esc(C.cities[s.from].name) + '</span>' + icon('plane') + '<span>' + esc(C.cities[s.to].name) + '</span></div>';
+    var loading = $('.flight-loading', ctx.el);
+    Dock.set({ back: false, visible: !!App.carry });
+    if (App.carry) Media.set({ primary: App.carry.el, members: [App.carry.el], label: 'Mensaje del capitán' });
 
-  // --------------------------------------------------------------------
-  // 12. Motor genérico de preguntas (opción múltiple o verdadero/falso):
-  //     cada click se evalúa al instante. Si es incorrecta, solo se marca
-  //     como incorrecta (sin revelar la respuesta correcta) y el usuario
-  //     puede seguir intentando con otras opciones. Al acertar, se bloquean
-  //     las opciones y aparece el botón "Siguiente"; ese botón es el único
-  //     que avanza de escena, y primero pausa el video de la escena actual
-  //     para que no quede sonando/reproduciéndose debajo de la siguiente.
-  // --------------------------------------------------------------------
-  function setupQuiz(config) {
-    var solved = false;
-
-    config.optionButtons.forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        if (solved) return;
-        var isCorrect = btn.getAttribute('data-correct') === 'true';
-
-        config.optionButtons.forEach(function (b) { b.classList.remove('selected'); });
-        btn.classList.add('selected');
-
-        config.feedbackBox.classList.remove('hidden');
-        config.feedbackBox.classList.toggle('state-correct', isCorrect);
-        config.feedbackBox.classList.toggle('state-incorrect', !isCorrect);
-        config.feedbackTitle.textContent = isCorrect ? '¡Correcto!' : (config.incorrectTitle || 'Incorrecto');
-        config.feedbackText.textContent = isCorrect ? config.correctExplanation : (config.incorrectText || 'Vuelve a intentarlo.');
-
-        if (isCorrect) {
-          solved = true;
-          btn.classList.add('correct');
-          config.optionButtons.forEach(function (b) { b.disabled = true; });
-          if (config.nextBtn) config.nextBtn.classList.remove('btn-hidden');
-        } else {
-          btn.classList.add('incorrect');
-        }
+    var started = false;
+    function fallback() {
+      loading.innerHTML = '<div class="center-card"><h2>No se pudo cargar la animación 3D</h2><p>Revisa tu conexión a internet. Puedes continuar el recorrido.</p></div>';
+      loading.classList.add('error');
+      Dock.set({ next: 'enabled', visible: true });
+    }
+    Earth.preload().then(function () {
+      if (!ctx.scope.alive) return;
+      loading.classList.add('done');
+      started = true;
+      Earth.start({
+        origin: C.cities[s.from], destination: C.cities[s.to], code: s.flightCode, duration: 4,
+        onArrive: function () { ctx.scope.timeout(ctx.next, 2000); },
       });
+    }).catch(function (err) {
+      console.error(err);
+      if (ctx.scope.alive) fallback();
     });
+    return {
+      leave: function () {
+        if (started || Earth.isReady()) Earth.stop();
+        layer.classList.remove('on');
+      },
+    };
+  };
 
-    if (config.nextBtn) {
-      config.nextBtn.addEventListener('click', function () {
-        if (config.currentVideo) {
-          try { config.currentVideo.pause(); } catch (e) {}
-        }
-        config.onCorrect();
-      });
-    }
+  // ---------- LLEGADA: aeropuerto + López Lomong ----------
+  Renderers.dialogue = function (ctx) {
+    var s = ctx.step;
+    ctx.el.innerHTML =
+      '<div class="bg kenburns" style="background-image:url(\'' + s.bg + '\')"></div>' +
+      '<div class="shade"></div>' +
+      '<img class="character" src="' + s.character + '" alt="' + esc(s.name) + '" />' +
+      '<div class="dialogue">' +
+      '  <div class="dialogue-name">' + esc(s.name) + '</div>' +
+      '  <p class="dialogue-text"><span class="typed"></span><span class="caret"></span></p>' +
+      '</div>';
+    var typed = $('.typed', ctx.el), box = $('.dialogue', ctx.el), ch = $('.character', ctx.el);
+    var full = s.text, i = 0, typing = true, exiting = false;
+    Dock.set({ next: 'enabled', nextLabel: 'Continuar' });
+
+    function finishTyping() { typing = false; typed.textContent = full; box.classList.add('done'); }
+    ctx.scope.timeout(function () {
+      ch.classList.add('in');
+      ctx.scope.timeout(function () {
+        box.classList.add('in');
+        if (REDUCED) { finishTyping(); return; }
+        ctx.scope.interval(function () {
+          if (!typing) return;
+          i++;
+          typed.textContent = full.slice(0, i);
+          if (i >= full.length) finishTyping();
+        }, 30);
+      }, 550);
+    }, 120);
+    ctx.scope.on(box, 'click', function () { if (typing) finishTyping(); });
+
+    return {
+      onNext: function () {
+        if (typing) { finishTyping(); return true; }
+        if (exiting) return true;
+        exiting = true;
+        box.classList.remove('in');
+        ch.classList.add('out');
+        ctx.scope.timeout(ctx.next, REDUCED ? 0 : 750);
+        return true;
+      },
+    };
+  };
+
+  // ---------- Pantalla dividida: video + pregunta ----------
+  function splitLayout(ctx, videoSide) {
+    var split = h('div', 'split' + (videoSide === 'right' ? ' video-right' : ''));
+    var media = h('div', 'pane-media');
+    var content = h('div', 'pane-content');
+    split.appendChild(media);
+    split.appendChild(content);
+    ctx.el.appendChild(split);
+    return { media: media, content: content };
   }
 
-  // --------------------------------------------------------------------
-  // 13. Escena 3 — Video "Correr para vivir (primera parte)" + opción múltiple
-  // --------------------------------------------------------------------
-  var VIDEO_SRC = encodeURI('assets/Correr para vivir (primera parte).mp4');
-  var CORRECT_EXPLANATION_1 =
-    'A la edad de seis años, mientras asistía a la iglesia de su aldea en Sudán, unos soldados rebeldes ' +
-    'irrumpieron en la misa y lo secuestraron en la caja de un camión militar junto con otros niños para ' +
-    'convertirlos en niños soldado. Este hecho trágico inició su cautiverio en un campamento rebelde del que ' +
-    'posteriormente lograría escapar con la ayuda de tres jóvenes mayores.';
-
-  function startQuizScene() {
-    SceneManager.activate('scene-quiz');
-    var video = document.getElementById('quiz-video');
-    if (!video.getAttribute('src')) video.src = VIDEO_SRC;
-    var p = video.play();
-    if (p && p.catch) p.catch(function () {});
-  }
-
-  setupQuiz({
-    optionButtons: Array.prototype.slice.call(document.querySelectorAll('#quiz-options .quiz-option')),
-    nextBtn: document.getElementById('quiz-next'),
-    currentVideo: document.getElementById('quiz-video'),
-    feedbackBox: document.getElementById('quiz-feedback'),
-    feedbackTitle: document.getElementById('quiz-feedback-title'),
-    feedbackText: document.getElementById('quiz-feedback-text'),
-    correctExplanation: CORRECT_EXPLANATION_1,
-    incorrectText: 'Revisa el video y vuelve a intentarlo.',
-    onCorrect: function () { startQuiz2Scene(); },
-  });
-
-  // --------------------------------------------------------------------
-  // 14. Escena 4 — Video "correrparavivir2.mp4" + Verdadero/Falso
-  // --------------------------------------------------------------------
-  var QUIZ2_VIDEO_SRC = encodeURI('assets/correrparavivir2.mp4');
-  var MOTHER_EXPLANATION =
-    'A principios del verano de 2003, mientras Lopez estaba en el jardín de su casa en Nueva York, recibió la ' +
-    'llamada de su amigo Simon desde el campo de refugiados de Kakuma. Simon le contó que su madre biológica ' +
-    'había estado en el campo preguntando por él al escuchar rumores de que seguía vivo en América. Al ' +
-    'enterarse y recibir el número telefónico, su madre adoptiva americana le animó a llamar de inmediato. ' +
-    'Tras doce años sin escucharse (desde que fue secuestrado a los seis años), su madre respondió al teléfono ' +
-    'reconociendo su nombre natal («¿Lopepe?») y rompió a llorar al confirmar que su hijo estaba vivo.';
-
-  function startQuiz2Scene() {
-    SceneManager.activate('scene-quiz2');
-    var video = document.getElementById('quiz-video-2');
-    if (!video.getAttribute('src')) video.src = QUIZ2_VIDEO_SRC;
-    var p = video.play();
-    if (p && p.catch) p.catch(function () {});
-  }
-
-  setupQuiz({
-    optionButtons: Array.prototype.slice.call(document.querySelectorAll('#quiz2-options .quiz-option')),
-    nextBtn: document.getElementById('quiz2-next'),
-    currentVideo: document.getElementById('quiz-video-2'),
-    feedbackBox: document.getElementById('quiz2-feedback'),
-    feedbackTitle: document.getElementById('quiz2-feedback-title'),
-    feedbackText: document.getElementById('quiz2-feedback-text'),
-    correctExplanation: MOTHER_EXPLANATION,
-    incorrectText: 'Revisa el video y vuelve a intentarlo.',
-    onCorrect: function () { startFlightLeg2(); },
-  });
-
-  // --------------------------------------------------------------------
-  // 15. Escena 5 — Video "video_serpersona.mp4" + reflexión final
-  // --------------------------------------------------------------------
-  var REFLEXION_VIDEO_SRC = encodeURI('assets/video_serpersona.mp4');
-
-  function startReflexionScene() {
-    SceneManager.activate('scene-reflexion');
-    var video = document.getElementById('reflexion-video');
-    if (!video.getAttribute('src')) video.src = REFLEXION_VIDEO_SRC;
-    var p = video.play();
-    if (p && p.catch) p.catch(function () {});
-  }
-
-  document.getElementById('reflexion-next').addEventListener('click', function () {
-    var video = document.getElementById('reflexion-video');
-    try { video.pause(); } catch (e) {}
-    startCloudsScene();
-  });
-
-  // --------------------------------------------------------------------
-  // 15b. Escena 6 — Transición: "Avion_volando_sobre_nubes.mp4" (x2) +
-  //      audio "capitan2.mp3" (~20s). Ambos medios corren en paralelo de
-  //      forma independiente; solo se avanza a la Escena 7 cuando el
-  //      audio Y el video (reproducido dos veces) han terminado.
-  // --------------------------------------------------------------------
-  var cloudsVideo = document.getElementById('clouds-video');
-  var cloudsAudio = document.getElementById('clouds-audio');
-  cloudsVideo.src = encodeURI('assets/Avión_volando_sobre_nubes.mp4');
-  // El video se reproduce sin sonido: el único audio de esta escena es el
-  // del capitán (capitan2.mp3), reproducido por separado.
-  cloudsVideo.muted = true;
-  cloudsVideo.volume = 0;
-
-  var cloudsVideoPlaysDone = 0;
-  var cloudsAudioDone = false;
-  var cloudsTransitionDone = false;
-
-  function maybeFinishClouds() {
-    if (cloudsTransitionDone) return;
-    if (cloudsVideoPlaysDone >= 2 && cloudsAudioDone) {
-      cloudsTransitionDone = true;
-      startPeliculaScene();
-    }
-  }
-
-  cloudsVideo.addEventListener('ended', function () {
-    cloudsVideoPlaysDone++;
-    if (cloudsVideoPlaysDone < 2) {
-      try { cloudsVideo.currentTime = 0; } catch (e) {}
-      playVideo(cloudsVideo);
-    } else {
-      maybeFinishClouds();
-    }
-  });
-
-  cloudsAudio.addEventListener('ended', function () {
-    cloudsAudioDone = true;
-    maybeFinishClouds();
-  });
-
-  function startCloudsScene() {
-    SceneManager.activate('scene-clouds');
-    cloudsVideoPlaysDone = 0;
-    cloudsAudioDone = false;
-    cloudsTransitionDone = false;
-    try { cloudsVideo.currentTime = 0; } catch (e) {}
-    try { cloudsAudio.currentTime = 0; } catch (e) {}
-    playVideo(cloudsVideo);
-    var audioPromise = cloudsAudio.play();
-    if (audioPromise && audioPromise.catch) audioPromise.catch(function () {});
-  }
-
-  // --------------------------------------------------------------------
-  // 15c. Escena 7 — Video "pelicula.mp4" + pregunta (sin opciones,
-  //      avanza al hacer click en "Siguiente").
-  // --------------------------------------------------------------------
-  var PELICULA_VIDEO_SRC = encodeURI('assets/pelicula.mp4');
-
-  function startPeliculaScene() {
-    SceneManager.activate('scene-pelicula');
-    var video = document.getElementById('pelicula-video');
-    if (!video.getAttribute('src')) video.src = PELICULA_VIDEO_SRC;
-    var p = video.play();
-    if (p && p.catch) p.catch(function () {});
-  }
-
-  document.getElementById('pelicula-next').addEventListener('click', function () {
-    var video = document.getElementById('pelicula-video');
-    try { video.pause(); } catch (e) {}
-    startFlightLeg3();
-  });
-
-  // --------------------------------------------------------------------
-  // 15d. Tercer tramo de vuelo — Kenia -> Estados Unidos (misma lógica y
-  //      temporización que los tramos anteriores).
-  // --------------------------------------------------------------------
-  function startFlightLeg3() {
-    configureLeg(KENIA, ESTADOS_UNIDOS, startLeyendoScene);
-    startFlightScene();
-  }
-
-  // --------------------------------------------------------------------
-  // 15e. Escena 8 — Video "leyendo.mp4" a pantalla completa; al terminar
-  //      avanza sola a la Escena 9 (e-book).
-  // --------------------------------------------------------------------
-  var leyendoVideo = document.getElementById('leyendo-video');
-  leyendoVideo.src = encodeURI('assets/leyendo.mp4');
-
-  function startLeyendoScene() {
-    SceneManager.activate('scene-leyendo');
-    try { leyendoVideo.currentTime = 0; } catch (e) {}
-    playVideo(leyendoVideo);
-  }
-
-  leyendoVideo.addEventListener('ended', function () {
-    startEbookScene();
-  });
-
-  // --------------------------------------------------------------------
-  // 15f. Escena 9 — E-book de dos páginas ("Manifestaciones de la
-  //      persona" / "Identidad"), pantalla final de solo lectura.
-  // --------------------------------------------------------------------
-  function startEbookScene() {
-    SceneManager.activate('scene-ebook');
-    document.querySelectorAll('.ebook-page').forEach(function (p) {
-      p.classList.toggle('active', p.getAttribute('data-page') === '1');
+  Renderers.videoQuiz = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    var L = splitLayout(ctx, s.videoSide);
+    var player = createPlayer(ctx, s.video, { label: 'Video' });
+    L.media.appendChild(player.el);
+    var c = L.content;
+    c.appendChild(h('div', 'kicker reveal', esc(s.kicker)));
+    c.appendChild(h('h2', 'question reveal', s.question));
+    c.appendChild(h('p', 'help reveal', 'Mira el video y elige la respuesta correcta.'));
+    mountChoices(c, {
+      options: s.options, solved: !!st.solved, explanation: s.explanation, wrongText: s.wrong,
+      wrongPicked: st.wrong || [],
+      onWrong: function (idx) { st.wrong = (st.wrong || []).concat([idx]); ctx.save(); },
+      onSolved: function () { st.solved = true; ctx.save(); ctx.gate(true); toast('¡Correcto! Pulsa «Siguiente» para continuar.', 'ok'); },
     });
-  }
+    stagger(c);
+    ctx.gate(!!st.solved, 'Responde correctamente para continuar');
+    return {};
+  };
 
-  document.querySelectorAll('.ebook-next-page, .ebook-prev-page').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var target = btn.getAttribute('data-goto');
-      document.querySelectorAll('.ebook-page').forEach(function (p) {
-        p.classList.toggle('active', p.getAttribute('data-page') === target);
-      });
+  Renderers.videoText = function (ctx) {
+    var s = ctx.step;
+    var L = splitLayout(ctx, s.videoSide);
+    var player = createPlayer(ctx, s.video, { label: 'Video' });
+    L.media.appendChild(player.el);
+    var c = L.content;
+    c.classList.add('center-y');
+    if (s.kicker) c.appendChild(h('div', 'kicker reveal', esc(s.kicker)));
+    var body = h('div', 'rich reveal', s.html);
+    c.appendChild(body);
+    stagger(c);
+    ctx.gate(true);
+    return {};
+  };
+
+  // ---------- Pregunta sin video ----------
+  Renderers.quiz = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    var wrap = h('div', 'page');
+    var card = h('div', 'card card-quiz');
+    card.appendChild(h('div', 'kicker reveal', esc(s.kicker)));
+    card.appendChild(h('h2', 'question reveal', s.question));
+    mountChoices(card, {
+      options: s.options, solved: !!st.solved, explanation: s.explanation, wrongText: s.wrong,
+      wrongPicked: st.wrong || [],
+      onWrong: function (idx) { st.wrong = (st.wrong || []).concat([idx]); ctx.save(); },
+      onSolved: function () { st.solved = true; ctx.save(); ctx.gate(true); toast('¡Correcto! Pulsa «Siguiente» para continuar.', 'ok'); },
     });
-  });
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    stagger(card);
+    ctx.gate(!!st.solved, 'Responde correctamente para continuar');
+    return {};
+  };
 
-  // --------------------------------------------------------------------
-  // 15g. Escenas 10-11 — Evaluaciones finales sobre la lectura y la
-  //      biografía de Lopez Lomong. Se despliegan en secuencia al salir
-  //      del e-book; reutilizan el mismo motor genérico de preguntas.
-  // --------------------------------------------------------------------
-  function startEval1Scene() {
-    SceneManager.activate('scene-eval1');
-  }
+  // ---------- Texto de reflexión ----------
+  Renderers.text = function (ctx) {
+    var s = ctx.step;
+    var wrap = h('div', 'page');
+    var card = h('div', 'card card-text');
+    if (s.kicker) card.appendChild(h('div', 'kicker reveal', esc(s.kicker)));
+    card.appendChild(h('div', 'rich reveal', s.html));
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    stagger(card);
+    ctx.gate(true);
+    return {};
+  };
 
-  function startEval2Scene() {
-    SceneManager.activate('scene-eval2');
-  }
-
-  document.getElementById('ebook-next-scene').addEventListener('click', function () {
-    startEval1Scene();
-  });
-
-  var EVAL1_EXPLANATION =
-    'Para Ricardo Yepes, los actos auténticos emanan del fondo de la intimidad personal y exigen mantener la ' +
-    'fidelidad o coherencia con los propios orígenes a lo largo del proyecto biográfico. Lopez Lomong encarna ' +
-    'este ideal al no entender el atletismo como un fin egocéntrico, sino como una vocación que integra su ' +
-    'historia de sufrimiento y gratitud. Al llegar a la cúspide deportiva y olímpica, utiliza su visibilidad ' +
-    'pública para denunciar la crisis en Darfur, promover la educación y el agua potable en su país natal y ' +
-    'representar a los niños vulnerables. De este modo, logra la unidad de vida de la que habla Yepes, uniendo ' +
-    'su pasado en Sudán y Kakuma con su presente profesional en Estados Unidos.';
-
-  setupQuiz({
-    optionButtons: Array.prototype.slice.call(document.querySelectorAll('#eval1-options .quiz-option')),
-    nextBtn: document.getElementById('eval1-next'),
-    feedbackBox: document.getElementById('eval1-feedback'),
-    feedbackTitle: document.getElementById('eval1-feedback-title'),
-    feedbackText: document.getElementById('eval1-feedback-text'),
-    correctExplanation: EVAL1_EXPLANATION,
-    incorrectText: 'Vuelve a leer el fragmento y elige otra opción.',
-    onCorrect: function () { startEval2Scene(); },
-  });
-
-  var EVAL2_EXPLANATION =
-    'La antropología del texto Manifestaciones de la Persona plantea que la persona no existe en el ' +
-    'aislamiento («no hay un yo si no hay un tú») y que la máxima realización personal se da en el acto de ' +
-    'donación o entrega voluntaria hacia el prójimo. En la autobiografía de Lomong, este principio se ' +
-    'manifiesta vívidamente cuando tres chicos mayores cautivos deciden proteger al pequeño Lopepe. Durante ' +
-    'tres días de escape descalzos por la sabana, estos jóvenes no solo planearon la fuga, sino que ' +
-    'compartieron su agua y comida, y lo cargaron físicamente sobre sus espaldas cuando sus fuerzas ' +
-    'colapsaron, anteponiendo la vida del niño a su propia seguridad. Este acto heroico de donación mutua ' +
-    'posibilitó la supervivencia y libertad de Lopez.';
-
-  setupQuiz({
-    optionButtons: Array.prototype.slice.call(document.querySelectorAll('#eval2-options .quiz-option')),
-    nextBtn: document.getElementById('eval2-next'),
-    feedbackBox: document.getElementById('eval2-feedback'),
-    feedbackTitle: document.getElementById('eval2-feedback-title'),
-    feedbackText: document.getElementById('eval2-feedback-text'),
-    correctExplanation: EVAL2_EXPLANATION,
-    incorrectText: 'Vuelve a leer el fragmento y elige otra opción.',
-    onCorrect: function () { startLibertadVideoScene(); },
-  });
-
-  // --------------------------------------------------------------------
-  // 15h. Escena 12 — Video "Libertad.mp4" a pantalla completa; al
-  //      terminar avanza sola a la Escena 13 (contexto + pregunta). Se
-  //      separaron en dos pantallas porque el video y el texto quedaban
-  //      superpuestos al mostrarse juntos.
-  // --------------------------------------------------------------------
-  var libertadVideo = document.getElementById('libertad-video');
-  libertadVideo.src = encodeURI('assets/Libertad.mp4');
-
-  function startLibertadVideoScene() {
-    SceneManager.activate('scene-libertad-video');
-    try { libertadVideo.currentTime = 0; } catch (e) {}
-    playVideo(libertadVideo);
-  }
-
-  libertadVideo.addEventListener('ended', function () {
-    startLibertadScene();
-  });
-
-  // --------------------------------------------------------------------
-  // 15i. Escena 13 — Contexto y pregunta de reflexión sobre la Libertad
-  //      (pantalla final, de solo lectura).
-  // --------------------------------------------------------------------
-  function startLibertadScene() {
-    SceneManager.activate('scene-libertad');
-  }
-
-  // --------------------------------------------------------------------
-  // 16. Pin de llegada animado (fin de la Escena 1, en cualquier tramo)
-  // --------------------------------------------------------------------
-  var arrivalPin = document.getElementById('arrival-pin');
-  var arrivalTriggered = false;
-
-  function triggerArrival() {
-    var screen = worldToScreen(destMarker);
-    // Se quita y se fuerza un reflow antes de volver a mostrarlo, para que
-    // la animación se repita correctamente en el segundo tramo del vuelo.
-    arrivalPin.classList.remove('show');
-    void arrivalPin.offsetWidth;
-    arrivalPin.style.left = screen.x + 'px';
-    arrivalPin.style.top = screen.y + 'px';
-    arrivalPin.classList.add('show');
-
-    // La escena queda estática (avión y cámara ya no se mueven) exactamente
-    // 2 segundos antes de abrir la siguiente pantalla.
-    setTimeout(function () {
-      if (currentLeg && currentLeg.onArrival) currentLeg.onArrival();
-    }, 2000);
-  }
-
-  // --------------------------------------------------------------------
-  // 17. Bucle de animación
-  // --------------------------------------------------------------------
-  var lastLabelUpdate = 0;
-  var flightStartMs = null;
-
-  function animate(nowMs) {
-    flightAnimationFrameId = requestAnimationFrame(animate);
-
-    if (flightStartMs === null) flightStartMs = nowMs;
-    var t = clamp((nowMs - flightStartMs) / (FLIGHT_ANIM_SECONDS * 1000), 0, 1);
-
-    var pos = positionAt(t);
-    var nextPos = positionAt(Math.min(t + 0.001, 1));
-    plane.position.copy(pos);
-    plane.up.copy(pos.clone().normalize());
-    plane.lookAt(nextPos);
-
-    var doneCount = Math.max(1, Math.floor(t * PATH_SEGMENTS));
-    traveledLine.geometry.setDrawRange(0, doneCount + 1);
-    remainingLine.geometry.setDrawRange(doneCount, PATH_SEGMENTS + 1 - doneCount);
-
-    clouds.rotation.y += 0.00025;
-    glowMaterial.uniforms.viewVector.value = camera.position.clone().sub(atmosphericGlow.position);
-
-    var altM = altitudeMetersAt(t);
-    var speed = speedKmhAt(t);
-    var temp = exteriorTempAt(altM);
-    var remainingHours = FLIGHT_DURATION_HOURS * (1 - t);
-
-    if (el.progressFill) el.progressFill.style.width = (t * 100).toFixed(1) + '%';
-    if (el.progressPct) el.progressPct.textContent = Math.round(t * 100) + '%';
-    if (el.speed) el.speed.textContent = Math.round(speed).toLocaleString('es-CO');
-    if (el.altitude) el.altitude.textContent = Math.round(altM).toLocaleString('es-CO');
-    if (el.altitudeFt) el.altitudeFt.textContent = Math.round(altM * 3.28084).toLocaleString('es-CO');
-    if (el.temp) el.temp.textContent = Math.round(temp);
-    if (el.eta) el.eta.textContent = formatHM(remainingHours);
-
-    // -- seguimiento "suave": solo se mueve el punto de mira (target) hacia
-    //    el avión; la posición de la cámara la sigue calculando OrbitControls
-    //    a partir de esa mira + la órbita/zoom que el usuario controla con el
-    //    mouse, así que el usuario puede libremente moverse para ver el
-    //    recorrido desde cualquier ángulo sin perder el seguimiento --
-    if (followPlane) {
-      var forwardDir = nextPos.clone().sub(pos);
-      if (forwardDir.lengthSq() < 1e-10) forwardDir.set(0, 0, -1);
-      forwardDir.normalize();
-      var lookTarget = plane.position.clone().add(forwardDir.clone().multiplyScalar(0.02));
-      controls.target.lerp(lookTarget, 0.06);
+  // ---------- Video a pantalla completa (con audio opcional) ----------
+  Renderers.cinematic = function (ctx) {
+    var s = ctx.step;
+    var v = makeVideo(s.video, { cls: 'fs-video', muted: !!s.videoMuted });
+    if (s.videoMuted) v.setAttribute('data-force-muted', '');
+    ctx.el.appendChild(v);
+    var a = null;
+    if (s.audio) {
+      a = document.createElement('audio');
+      a.preload = 'auto';
+      a.src = s.audio;
+      ctx.el.appendChild(a);
     }
-    controls.update();
-
-    scene.updateMatrixWorld(true);
-
-    if (nowMs - lastLabelUpdate > 33) {
-      updateLabels();
-      lastLabelUpdate = nowMs;
+    var vignette = h('div', 'vignette');
+    ctx.el.appendChild(vignette);
+    if (s.caption) {
+      ctx.el.appendChild(h('div', 'cine-caption', '<span class="eq on"><i></i><i></i><i></i><i></i></span><strong>' + esc(s.caption) + '</strong>'));
     }
+    var play = h('button', 'big-play', '<span class="po-circle">' + icon('play') + '</span><span class="po-text">Toca para reproducir</span>');
+    play.type = 'button'; play.hidden = true;
+    ctx.el.appendChild(play);
 
-    renderer.render(scene, camera);
-
-    if (t >= 1 && !arrivalTriggered) {
-      arrivalTriggered = true;
-      triggerArrival();
+    var loopsLeft = s.loops || 1, plays = 0;
+    var videoDone = false, audioDone = !a, finished = false;
+    function maybeFinish() {
+      if (finished) return;
+      if (videoDone && audioDone) { finished = true; ctx.next(); }
     }
-  }
+    Media.set({ primary: a || v, members: a ? [v, a] : [v], label: s.caption || '', onBlocked: function () { play.hidden = false; } });
+    Dock.set({ skip: { label: 'Saltar', fn: function () { ctx.next(); } } });
 
-  // --------------------------------------------------------------------
-  // 18. Resize
-  // --------------------------------------------------------------------
-  window.addEventListener('resize', function () {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
-
-  // --------------------------------------------------------------------
-  // 19. Arranque de la Escena 1 (vuelo) y del segundo tramo
-  // --------------------------------------------------------------------
-  var animateStarted = false;
-  var flightAnimationFrameId = null;
-
-  function stopFlightAnimation() {
-    if (flightAnimationFrameId !== null) {
-      cancelAnimationFrame(flightAnimationFrameId);
-      flightAnimationFrameId = null;
-    }
-    animateStarted = false;
-  }
-
-  function resumeFlightAnimation() {
-    if (!animateStarted) {
-      animateStarted = true;
-      flightAnimationFrameId = requestAnimationFrame(animate);
-    }
-  }
-
-  function startFlightScene() {
-    SceneManager.activate('scene-flight');
-    hideLoadingScreen();
-    flightStartMs = null;
-    arrivalTriggered = false;
-    resumeFlightAnimation();
-  }
-
-  function startFlightLeg2() {
-    configureLeg(SUDAN_DEL_SUR, KENIA, startReflexionScene);
-    startFlightScene();
-  }
-
-  // --------------------------------------------------------------------
-  // 20. Escena 0 — Sala de espera + audio del capitán
-  //     El audio suena completo, sin cortes; a los 49s exactos se muestra
-  //     (en simultáneo con el audio, que sigue de fondo) el despegue.
-  // --------------------------------------------------------------------
-  var startBtn = document.getElementById('start-btn');
-  var captainAudio = document.getElementById('captain-audio');
-  var TRANSITION_AT_SECONDS = 49;
-  var waitingTransitionTriggered = false;
-
-  function goToTakeoff() {
-    if (waitingTransitionTriggered) return;
-    waitingTransitionTriggered = true;
-    startTakeoffScene(); // el audio NO se pausa: sigue sonando de fondo
-  }
-
-  startBtn.addEventListener('click', function () {
-    startBtn.classList.add('fade-out');
-    captainAudio.currentTime = 0;
-    captainAudio.volume = 1;
-    var playPromise = captainAudio.play();
-    if (playPromise && playPromise.catch) {
-      playPromise.catch(function () { /* audio bloqueado: el respaldo por reloj sigue la secuencia */ });
-    }
-
-    captainAudio.addEventListener('timeupdate', function onTimeUpdate() {
-      if (captainAudio.currentTime >= TRANSITION_AT_SECONDS) {
-        captainAudio.removeEventListener('timeupdate', onTimeUpdate);
-        goToTakeoff();
+    ctx.scope.on(play, 'click', function () { play.hidden = true; safePlay(v); if (a && !audioDone) safePlay(a); });
+    ctx.scope.on(v, 'playing', function () { play.hidden = true; ctx.el.classList.add('is-playing'); });
+    ctx.scope.on(v, 'ended', function () {
+      plays++;
+      if (plays < loopsLeft) {
+        try { v.currentTime = 0; } catch (e) {}
+        safePlay(v);
+      } else {
+        videoDone = true;
+        maybeFinish();
       }
     });
+    ctx.scope.on(v, 'error', function () {
+      videoDone = true;
+      ctx.el.classList.add('no-video');
+      if (!a) { toast('No se pudo cargar el video. Continuamos.'); ctx.scope.timeout(ctx.next, 1400); }
+      else maybeFinish();
+    });
+    if (a) {
+      ctx.scope.on(a, 'ended', function () { audioDone = true; maybeFinish(); });
+      ctx.scope.on(a, 'error', function () { audioDone = true; maybeFinish(); });
+    }
+    safePlay(v);
+    if (a) safePlay(a);
+    return {};
+  };
 
-    setTimeout(goToTakeoff, TRANSITION_AT_SECONDS * 1000);
-  });
+  // ---------- E-book con páginas ----------
+  Renderers.ebook = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    st.page = Math.min(st.page || 0, s.pages.length - 1);
+    var wrap = h('div', 'book-wrap');
+    var book = h('div', 'book');
+    var pages = s.pages.map(function (pg, i) {
+      var p = h('article', 'book-page');
+      p.innerHTML =
+        '<div class="book-meta"><span>' + icon('book') + 'E-book</span><span>Página ' + (i + 1) + ' de ' + s.pages.length + '</span></div>' +
+        '<h1 class="book-title">' + esc(pg.title) + '</h1>' +
+        pg.paragraphs.map(function (t, k) { return '<p' + (k === 0 ? ' class="dropcap"' : '') + '>' + esc(t) + '</p>'; }).join('');
+      book.appendChild(p);
+      return p;
+    });
+    var nav = h('div', 'book-nav');
+    var prevB = h('button', 'btn btn-ghost btn-sm', icon('left') + '<span>Página anterior</span>');
+    var nextB = h('button', 'btn btn-ghost btn-sm', '<span>Página siguiente</span>' + icon('right'));
+    prevB.type = nextB.type = 'button';
+    var dots = h('div', 'book-dots');
+    s.pages.forEach(function (_, i) {
+      var d = h('button', 'dot'); d.type = 'button'; d.setAttribute('aria-label', 'Ir a la página ' + (i + 1));
+      d.addEventListener('click', function () { show(i); });
+      dots.appendChild(d);
+    });
+    nav.appendChild(prevB); nav.appendChild(dots); nav.appendChild(nextB);
+    wrap.appendChild(book); wrap.appendChild(nav);
+    ctx.el.appendChild(wrap);
 
-  // --------------------------------------------------------------------
-  // 21. Escena de despegue — apuntodespegar.mp4 -> despegando.mp4, en
-  //     continuo (el segundo video ya está precargado antes de que
-  //     termine el primero, para un corte sin parpadeo).
-  // --------------------------------------------------------------------
-  var takeoffVideo1 = document.getElementById('takeoff-video-1');
-  var takeoffVideo2 = document.getElementById('takeoff-video-2');
-  takeoffVideo1.src = encodeURI('assets/apuntodespegar.mp4');
-  takeoffVideo2.src = encodeURI('assets/despegando.mp4');
+    function show(i, dir) {
+      var prevPage = st.page;
+      st.page = i; ctx.save();
+      pages.forEach(function (p, k) {
+        p.classList.remove('active', 'flip-in-next', 'flip-in-prev');
+        if (k === i) {
+          p.classList.add('active');
+          if (dir) p.classList.add(dir > 0 ? 'flip-in-next' : 'flip-in-prev');
+        }
+      });
+      $$('.dot', dots).forEach(function (d, k) { d.classList.toggle('on', k === i); });
+      prevB.disabled = i === 0;
+      nextB.disabled = i === s.pages.length - 1;
+      var last = i === s.pages.length - 1;
+      Dock.set({ next: 'enabled', nextLabel: last ? 'Siguiente' : 'Siguiente página', back: i > 0 || App.prevContentIndex(App.index) >= 0 });
+      if (prevPage !== i) { try { ctx.el.scrollTop = 0; book.scrollTop = 0; } catch (e) {} }
+    }
+    prevB.addEventListener('click', function () { if (st.page > 0) show(st.page - 1, -1); });
+    nextB.addEventListener('click', function () { if (st.page < s.pages.length - 1) show(st.page + 1, 1); });
+    show(st.page);
+    return {
+      onNext: function () { if (st.page < s.pages.length - 1) { show(st.page + 1, 1); return true; } return false; },
+      onBack: function () { if (st.page > 0) { show(st.page - 1, -1); return true; } return false; },
+    };
+  };
 
-  function playVideo(videoEl) {
-    var p = videoEl.play();
-    if (p && p.catch) p.catch(function () {});
+  // ---------- Sopa de letras ----------
+  Renderers.wordsearch = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    var wrap = h('div', 'page page-wide');
+    var card = h('div', 'card card-game');
+    card.appendChild(header(s));
+    var host = h('div', 'game-host reveal');
+    card.appendChild(host);
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    st.ws = st.ws || {};
+    Games.wordsearch(host, { words: s.words, seed: s.id }, st.ws, {
+      onFound: function (w) { ctx.save(); toast('¡Encontraste «' + w + '»!', 'ok'); },
+      onComplete: function (r) {
+        st.solved = true; ctx.save();
+        ctx.gate(true);
+        if (!r.revealed) { burstAt(host, 120); toast('¡Sopa de letras completada!', 'ok'); }
+      },
+    });
+    stagger(card);
+    ctx.gate(!!st.solved, 'Encuentra todas las palabras (o revela la solución) para continuar');
+    return {};
+  };
+
+  // ---------- Crucigrama ----------
+  Renderers.crossword = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    var wrap = h('div', 'page page-wide');
+    var card = h('div', 'card card-game');
+    card.appendChild(header(s));
+    var host = h('div', 'game-host reveal');
+    card.appendChild(host);
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    st.cw = st.cw || {};
+    Games.crossword(host, { entries: s.entries }, st.cw, {
+      onChange: function () { ctx.save(); },
+      onToast: function (m) { toast(m); },
+      onComplete: function (r) {
+        st.solved = true; ctx.save();
+        ctx.gate(true);
+        if (!r.revealed) { burstAt(host, 120); toast('¡Crucigrama completado!', 'ok'); }
+      },
+    });
+    stagger(card);
+    ctx.gate(!!st.solved, 'Completa el crucigrama (o revela la solución) para continuar');
+    return {};
+  };
+
+  // ---------- Clasificar y emparejar (actividades sin sopa ni crucigrama) ----------
+  function simpleGame(kind, hint) {
+    return function (ctx) {
+      var s = ctx.step, st = ctx.state;
+      var wrap = h('div', 'page page-wide');
+      var card = h('div', 'card card-game');
+      card.appendChild(header(s));
+      var host = h('div', 'game-host reveal');
+      card.appendChild(host);
+      wrap.appendChild(card);
+      ctx.el.appendChild(wrap);
+      st.g = st.g || {};
+      var cfg = { seed: s.id, wrongText: s.wrong };
+      if (kind === 'sort') { cfg.cards = s.cards; cfg.bins = s.bins; }
+      else { cfg.pairs = s.pairs; }
+      Games[kind](host, cfg, st.g, {
+        icon: icon,
+        onFeedback: function (good, msg) { if (window.innerWidth < 900) toast(msg, good ? 'ok' : ''); },
+        onChange: function () { ctx.save(); },
+        onComplete: function (r) {
+          st.solved = true; ctx.save();
+          ctx.gate(true);
+          if (!r.revealed) { burstAt(host, 120); toast('¡Actividad completada!', 'ok'); }
+        },
+      });
+      stagger(card);
+      ctx.gate(!!st.solved, hint);
+      return {};
+    };
+  }
+  Renderers.sort = simpleGame('sort', 'Clasifica todas las tarjetas (o revela la solución) para continuar');
+  Renderers.match = simpleGame('match', 'Forma todas las parejas (o revela la solución) para continuar');
+
+  // ---------- Portada de sección ----------
+  Renderers.section = function (ctx) {
+    var s = ctx.step;
+    ctx.el.innerHTML =
+      '<div class="sec-bg"><span class="sec-stripe"></span><span class="sec-stripe s2"></span><span class="sec-num">' + esc(s.number) + '</span></div>' +
+      '<div class="sec-wrap">' +
+      '  <div class="kicker reveal">Sección ' + esc(s.number) + '</div>' +
+      '  <h1 class="sec-title reveal">' + esc(s.title) + '</h1>' +
+      '  <p class="sec-tagline reveal">' + esc(s.tagline) + '</p>' +
+      '  <blockquote class="sec-quote reveal"><p>«' + esc(s.quote) + '»</p><cite>— ' + esc(s.quoteAuthor) + '</cite></blockquote>' +
+      '  <div class="sec-steps reveal"><span class="sec-steps-t">En esta sección</span><ol>' +
+      s.steps.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ol></div>' +
+      '  <p class="sec-sources reveal">Basado en: ' + esc(s.sources) + '</p>' +
+      '</div>';
+    stagger(ctx.el);
+    ctx.gate(true);
+    Dock.set({ nextLabel: 'Empezar' });
+    return {};
+  };
+
+  // ---------- Página de información ----------
+  function renderBlock(b) {
+    var out = h('div', 'blk blk-' + b.type + ' reveal');
+    if (b.title) out.appendChild(h('h3', 'blk-title', esc(b.title)));
+    var row;
+    switch (b.type) {
+      case 'pair':
+      case 'cards':
+        row = h('div', b.type === 'pair' ? 'pair' : 'cards');
+        b.items.forEach(function (it) {
+          row.appendChild(h('div', 'mini-card', '<span class="mc-ico">' + icon(it.icon) + '</span><div><h4>' + esc(it.title) + '</h4><p>' + it.text + '</p></div>'));
+        });
+        out.appendChild(row);
+        break;
+      case 'callout':
+        out.innerHTML = '<span class="mc-ico">' + icon(b.icon || 'spark') + '</span><p>' + b.text + '</p>';
+        break;
+      case 'types':
+        row = h('div', 'types');
+        b.items.forEach(function (it) {
+          row.appendChild(h('div', 'type-card',
+            '<div class="tc-head"><h4>' + esc(it.name) + '</h4><span class="tc-virtue">' + esc(it.virtue) + '</span></div>' +
+            '<div class="tc-bars"><span>Competencia <b class="' + (it.comp === 'Alta' ? 'hi' : 'lo') + '">' + esc(it.comp) + '</b></span><span>Merecimiento <b class="' + (it.mer === 'Alto' ? 'hi' : 'lo') + '">' + esc(it.mer) + '</b></span></div>' +
+            '<p>' + it.text + '</p>'));
+        });
+        out.appendChild(row);
+        break;
+      case 'roots':
+        row = h('div', 'roots');
+        b.items.forEach(function (it, i) {
+          row.appendChild(h('div', 'root-item', '<span class="mc-ico">' + icon(it.icon) + '</span><h4>' + esc(it.title) + '</h4><p>' + it.text + '</p>'));
+          if (i < b.items.length - 1) row.appendChild(h('span', 'root-plus', '+'));
+        });
+        out.appendChild(row);
+        break;
+      case 'levels':
+        row = h('ol', 'levels');
+        b.items.forEach(function (it, i) {
+          row.appendChild(h('li', 'level', '<span class="lv-n">' + (i + 1) + '</span><div><h4>' + esc(it.title) + '</h4><p>' + it.text + '</p></div>'));
+        });
+        out.appendChild(row);
+        break;
+      case 'decalogue':
+        row = h('ol', 'decalogue');
+        b.items.forEach(function (it, i) {
+          row.appendChild(h('li', 'dec-item', '<span class="dec-n">' + (i + 1) + '</span><div><h4>' + esc(it.title) + '</h4><p>' + esc(it.text) + '</p></div>'));
+        });
+        out.appendChild(row);
+        break;
+      case 'pillars':
+      case 'moths':
+        row = h('div', b.type === 'pillars' ? 'pillars' : 'moths');
+        b.items.forEach(function (it) {
+          row.appendChild(h('div', 'pm-item', '<h4>' + esc(it.title) + '</h4><p>' + esc(it.text) + '</p>'));
+        });
+        out.appendChild(row);
+        break;
+    }
+    return out;
   }
 
-  function startTakeoffScene() {
-    SceneManager.activate('scene-takeoff');
-    takeoffVideo1.classList.remove('hidden-video');
-    takeoffVideo2.classList.add('hidden-video');
-    try { takeoffVideo1.currentTime = 0; } catch (e) {}
-    playVideo(takeoffVideo1);
+  Renderers.info = function (ctx) {
+    var s = ctx.step;
+    var wrap = h('div', 'page page-wide');
+    var paper = h('article', 'paper');
+    paper.innerHTML =
+      '<div class="paper-top"><span class="kicker">' + esc(s.kicker) + '</span><span class="paper-page">' + esc(s.page) + '</span></div>' +
+      '<h1 class="paper-title reveal">' + esc(s.title) + '</h1>' +
+      '<p class="paper-lead reveal">' + s.lead + '</p>';
+    s.blocks.forEach(function (b) { paper.appendChild(renderBlock(b)); });
+    wrap.appendChild(paper);
+    ctx.el.appendChild(wrap);
+    stagger(paper);
+    ctx.gate(true);
+    return {};
+  };
+
+  // ---------- Serie de preguntas de selección múltiple ----------
+  Renderers.mcq = function (ctx) {
+    var s = ctx.step, st = ctx.state;
+    st.q = st.q || {};
+    var wrap = h('div', 'page');
+    var card = h('div', 'card card-mcq');
+    card.appendChild(header(s));
+    var prog = h('div', 'mcq-progress reveal');
+    card.appendChild(prog);
+    var letters = ['A', 'B', 'C', 'D', 'E'];
+    function solvedCount() { return s.questions.filter(function (_, i) { return st.q[i] && st.q[i].solved; }).length; }
+    function refresh() {
+      var n = solvedCount();
+      prog.innerHTML = '<div class="mcq-bar"><i style="transform:scaleX(' + (n / s.questions.length) + ')"></i></div><span><strong>' + n + '</strong> de ' + s.questions.length + ' respondidas correctamente</span>';
+      if (n === s.questions.length) {
+        if (!st.solved) { st.solved = true; ctx.save(); FX.burst(null, null, 130); toast('¡Excelente! Respondiste todas correctamente.', 'ok'); }
+        ctx.gate(true);
+      }
+    }
+    s.questions.forEach(function (q, qi) {
+      var qs = st.q[qi] || (st.q[qi] = {});
+      var box = h('section', 'mcq-q reveal');
+      box.appendChild(h('h3', 'mcq-title', '<span class="mcq-n">' + (qi + 1) + '</span>' + esc(q.q)));
+      mountChoices(box, {
+        options: q.options.map(function (t, i) { return { letter: letters[i], text: esc(t), correct: i === q.correct }; }),
+        solved: !!qs.solved, explanation: esc(q.explanation), wrongText: s.wrong, wrongPicked: qs.wrong || [],
+        onWrong: function (idx) { qs.wrong = (qs.wrong || []).concat([idx]); ctx.save(); },
+        onSolved: function () { qs.solved = true; ctx.save(); refresh(); },
+      });
+      card.appendChild(box);
+    });
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    stagger(card);
+    refresh();
+    if (!st.solved) ctx.gate(false, 'Responde correctamente todas las preguntas para continuar');
+    return {};
+  };
+
+  // ---------- Preguntas de reflexión ----------
+  Renderers.reflection = function (ctx) {
+    var s = ctx.step;
+    var answers = store.reflections[s.id] || (store.reflections[s.id] = {});
+    var wrap = h('div', 'page');
+    var card = h('div', 'card card-refl');
+    card.appendChild(header(s));
+    s.questions.forEach(function (q, qi) {
+      var box = h('label', 'refl-q reveal');
+      box.innerHTML = '<span class="refl-n">' + (qi + 1) + '</span><span class="refl-text">' + esc(q) + '</span>';
+      var ta = h('textarea', 'refl-input');
+      ta.rows = 3;
+      ta.placeholder = 'Escribe aquí tu reflexión (opcional)…';
+      ta.value = answers[qi] || '';
+      var status = h('span', 'refl-status', ta.value ? 'Guardado' : '');
+      ctx.scope.on(ta, 'input', function () {
+        answers[qi] = ta.value;
+        status.textContent = 'Guardando…';
+        saveStore();
+        ctx.scope.timeout(function () { status.textContent = ta.value ? 'Guardado' : ''; }, 500);
+      });
+      box.appendChild(ta);
+      box.appendChild(status);
+      card.appendChild(box);
+    });
+    wrap.appendChild(card);
+    ctx.el.appendChild(wrap);
+    stagger(card);
+    ctx.gate(true);
+    return {};
+  };
+
+  // ---------- Final ----------
+  function reflectionsText() {
+    var lines = ['CORRER PARA VIVIR — MIS REFLEXIONES', 'Fecha: ' + new Date().toLocaleDateString('es-CO'), ''];
+    var any = false;
+    FLOW.forEach(function (s) {
+      if (s.type !== 'reflection') return;
+      var ans = store.reflections[s.id] || {};
+      lines.push('== ' + chapterOf(s).title + ' ==');
+      s.questions.forEach(function (q, i) {
+        lines.push((i + 1) + '. ' + q);
+        lines.push('   ' + (ans[i] ? ans[i].replace(/\n/g, '\n   ') : '(sin respuesta)'));
+        if (ans[i]) any = true;
+        lines.push('');
+      });
+    });
+    return { text: lines.join('\n'), any: any };
   }
 
-  takeoffVideo1.addEventListener('ended', function () {
-    takeoffVideo1.classList.add('hidden-video');
-    takeoffVideo2.classList.remove('hidden-video');
-    try { takeoffVideo2.currentTime = 0; } catch (e) {}
-    playVideo(takeoffVideo2);
+  Renderers.final = function (ctx) {
+    var s = ctx.step;
+    var games = 0, gamesDone = 0, quizzes = 0, quizzesDone = 0;
+    var sections = FLOW.filter(function (x) { return x.type === 'section'; }).length;
+    FLOW.forEach(function (x) {
+      var stt = store.steps[x.id] || {};
+      if (x.type === 'wordsearch' || x.type === 'crossword' || x.type === 'sort' || x.type === 'match') { games++; if (stt.solved) gamesDone++; }
+      if (x.type === 'videoQuiz' || x.type === 'quiz' || x.type === 'mcq') { quizzes++; if (stt.solved) quizzesDone++; }
+    });
+    ctx.el.innerHTML =
+      '<div class="final-wrap">' +
+      '  <div class="final-badge">' + icon('check') + '</div>' +
+      '  <h1 class="final-title reveal">' + esc(s.title) + '</h1>' +
+      '  <p class="final-text reveal">' + esc(s.text) + '</p>' +
+      '  <div class="final-stats reveal">' +
+      '    <div><strong>' + gamesDone + '/' + games + '</strong><span>juegos y actividades</span></div>' +
+      '    <div><strong>' + quizzesDone + '/' + quizzes + '</strong><span>evaluaciones superadas</span></div>' +
+      '    <div><strong>' + sections + '</strong><span>secciones exploradas</span></div>' +
+      '  </div>' +
+      '  <div class="final-actions reveal">' +
+      '    <button class="btn btn-primary" data-act="dl" type="button">' + icon('download') + '<span>Descargar mis reflexiones</span></button>' +
+      '    <button class="btn btn-ghost" data-act="menu" type="button">' + icon('menu') + '<span>Ver capítulos</span></button>' +
+      '    <button class="btn btn-ghost" data-act="again" type="button">' + icon('replay') + '<span>Volver a empezar</span></button>' +
+      '  </div>' +
+      '</div>';
+    stagger(ctx.el);
+    ctx.scope.timeout(function () { FX.burst(null, window.innerHeight * 0.35, 160); }, 500);
+    ctx.scope.on($('[data-act="dl"]', ctx.el), 'click', function () {
+      var r = reflectionsText();
+      if (!r.any) toast('Aún no escribiste reflexiones, pero igual puedes descargar las preguntas.');
+      try {
+        var blob = new Blob([r.text], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'mis-reflexiones-correr-para-vivir.txt';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      } catch (e) { toast('No se pudo descargar el archivo en este navegador.'); }
+    });
+    ctx.scope.on($('[data-act="menu"]', ctx.el), 'click', function () { Top.open(); });
+    ctx.scope.on($('[data-act="again"]', ctx.el), 'click', function () { App.jump(0); });
+    return {};
+  };
+
+  Renderers.unknown = function (ctx) {
+    ctx.el.innerHTML = '<div class="center-card"><h2>Pantalla no disponible</h2></div>';
+    ctx.gate(true);
+    return {};
+  };
+
+  // ------------------------------------------------------------------
+  // Teclado
+  // ------------------------------------------------------------------
+  document.addEventListener('keydown', function (e) {
+    if (e.defaultPrevented) return;
+    var t = e.target;
+    var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    if (e.key === 'Escape' && Top.isOpen()) { Top.close(); return; }
+    if (typing || Top.isOpen()) return;
+    var d = Dock.get();
+    if (e.key === 'ArrowRight') {
+      if (d.next === 'enabled' && !$('#btn-next').hidden) { e.preventDefault(); App.next(); }
+    } else if (e.key === 'ArrowLeft') {
+      if (!$('#btn-back').hidden) { e.preventDefault(); App.back(); }
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      var onButton = t && t.tagName === 'BUTTON';
+      var inDock = onButton && t.closest && (t.closest('#dock') || t.closest('.player') || t.closest('.big-play'));
+      if (Media.members.length && (!onButton || inDock)) { e.preventDefault(); Media.toggle(); }
+    } else if (e.key === 'm' || e.key === 'M') {
+      if (Media.members.length) Media.toggleMute();
+    }
   });
 
-  takeoffVideo2.addEventListener('ended', function () {
-    startFlightScene();
-  });
+  window.addEventListener('error', function (e) { console.error('Error:', e.message); });
 
-  // --------------------------------------------------------------------
-  // 22. Deja lista la ruta del primer tramo (Bogotá -> Sudán del Sur) para
-  //     que la Escena 1 tenga todo listo apenas termine el despegue.
-  // --------------------------------------------------------------------
-  configureLeg(BOGOTA, SUDAN_DEL_SUR, startArrivalScene);
+  // Interfaz de prueba (solo con ?test=1 en la URL)
+  if (/[?&]test=1/.test(location.search)) {
+    window.__app = {
+      App: App, Media: Media, store: function () { return store; }, flow: FLOW, Dock: Dock,
+      index: function () { return App.index; },
+      step: function () { return FLOW[App.index]; },
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // Arranque
+  // ------------------------------------------------------------------
+  App.go(0, { force: true });
 })();
